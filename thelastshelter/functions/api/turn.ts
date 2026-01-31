@@ -221,6 +221,7 @@ async function callDeepSeek(apiKey: string, systemPrompt: string, userPrompt: st
   if (!res.ok) {
     const err = (await res.text()).slice(0, 200);
     throw new Error(`DeepSeek ${res.status}: ${err}`);
+    
   }
   const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
   const content = json.choices?.[0]?.message?.content?.trim();
