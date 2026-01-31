@@ -201,6 +201,7 @@ function normalizeForFrontend(res: TurnResponse): TurnResponse {
 }
 
 async function callDeepSeek(apiKey: string, systemPrompt: string, userPrompt: string): Promise<string> {
+  // Authorization 必须严格为 Bearer ${apiKey}，不加其他前缀，key 不放 querystring
   const res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
     method: "POST",
     headers: {
