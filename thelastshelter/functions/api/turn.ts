@@ -122,7 +122,7 @@ bag.slots: ${(state.bag as unknown[]).length}
 【地图】
 grid: 9x9
 player_pos: (${(state.player_pos as { x: number; y: number }).x}, ${(state.player_pos as { x: number; y: number }).y})
-exit_pos: (${(state.exit_pos as { x: number; y: number }).x}, ${(state.exit_pos as { x: number; y: number }).y})
+exit_pos: (hidden)
 fog_summary: unknown=${fogCount} seen=${81 - fogCount}
 
 【最近日志】
@@ -169,6 +169,15 @@ function safetyFallbackResponse(state: GameState): TurnResponse {
     suggestion: { delta: {} },
     memory_update: "",
     safety_fallback: "服务暂时不可用，已返回安全兜底。",
+  };
+}
+
+/** 为兼容前端：scene_blocks 同时带 content 与 text（同值）；choices 同时带 action_type 与 action（同值）。不改变校验逻辑。 */
+function normalizeForFrontend(res: TurnResponse): TurnResponse {
+  return {
+    ...res,
+    scene_blocks: res.scene_blocks.map((b) => ({ ...b, content: b.content, text: b.content })),
+    choices: res.choices.map((c) => ({ ...c, action_type: c.action_type as string, action: c.action_type as string })),
   };
 }
 
@@ -242,6 +251,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   let result = await tryOnce();
   if (result === null) result = await tryOnce();
   if (result === null) result = safetyFallbackResponse(state);
+  result = normalizeForFrontend(result);
 
   return new Response(JSON.stringify(result), {
     status: 200,
