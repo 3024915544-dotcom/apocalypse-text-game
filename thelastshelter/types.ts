@@ -1,5 +1,5 @@
 
-export type ActionType = 'MOVE_N' | 'MOVE_S' | 'MOVE_E' | 'MOVE_W' | 'SEARCH' | 'SILENCE' | 'INIT';
+export type ActionType = 'MOVE_N' | 'MOVE_S' | 'MOVE_E' | 'MOVE_W' | 'SEARCH' | 'SILENCE' | 'INIT' | 'LOOT' | 'SCAN';
 
 export enum RiskLevel {
   LOW = 'LOW',
@@ -75,6 +75,7 @@ export interface TurnResponse {
 export interface GameState {
   hp: number;
   exposure: number;
+  battery: number;
   water: number;
   food: number;
   fuel: number;

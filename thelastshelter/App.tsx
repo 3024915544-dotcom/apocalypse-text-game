@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { GameState, TurnResponse, ActionType } from './types';
+import { GameState, TurnResponse, ActionType, RiskLevel, DirectionHint } from './types';
 import { createInitialState, applyAction, applyBagDelta } from './engine';
 import { fetchTurnResponse } from './geminiService';
-import { GRID_SIZE, MAX_TURNS, MILESTONES, BAG_CAPACITY } from './constants';
+import { GRID_SIZE, MAX_TURNS, MILESTONES, BAG_CAPACITY, BATTERY_MAX } from './constants';
 import { getSurvivalPoints, addSurvivalPoints, computeRunPoints } from './game/economy';
 import ShelterHome from './ShelterHome';
 
@@ -12,6 +12,7 @@ function RunScreen() {
   const [lastResponse, setLastResponse] = useState<TurnResponse | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [settlementRunPoints, setSettlementRunPoints] = useState<number | null>(null);
+  const [lastActionType, setLastActionType] = useState<ActionType | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasCreditedRef = useRef(false);
 
@@ -35,22 +36,49 @@ function RunScreen() {
     setSettlementRunPoints(points);
   }, [gameState.status]);
 
+  /** 通信失败时使用的 fallback，保证回合推进与扣电。 */
+  const buildFallbackResponse = (): TurnResponse => ({
+    scene_blocks: [
+      { type: 'TITLE', content: '通信中断' },
+      { type: 'EVENT', content: '你只能靠直觉行动。' },
+    ],
+    choices: [
+      { id: 'fb-n', label: '向北', hint: '移动', risk: RiskLevel.LOW, preview_cost: {}, action_type: 'MOVE_N' },
+      { id: 'fb-e', label: '向东', hint: '移动', risk: RiskLevel.LOW, preview_cost: {}, action_type: 'MOVE_E' },
+      { id: 'fb-search', label: '搜索', hint: '翻找', risk: RiskLevel.MID, preview_cost: {}, action_type: 'SEARCH' },
+      { id: 'fb-s', label: '向南', hint: '移动', risk: RiskLevel.LOW, preview_cost: {}, action_type: 'MOVE_S' },
+    ],
+    ui: {
+      progress: { turn_index: gameState.turn_index, milestones_hit: [] },
+      map_delta: { reveal_indices: [], direction_hint: DirectionHint.NONE },
+      bag_delta: { add: [], remove: [] },
+    },
+    suggestion: { delta: {} },
+    memory_update: '',
+  });
+
   const handleTurn = async (action: ActionType) => {
+    setLastActionType(action);
     if (gameState.status !== 'PLAYING' && action !== 'INIT') return;
     setIsProcessing(true);
-    const response = await fetchTurnResponse(gameState, action);
-    setLastResponse(response);
-    setGameState(prev => {
-      let newState = prev;
+    try {
       if (action !== 'INIT') {
-        newState = applyAction(prev, action, response.suggestion.delta);
+        setGameState(prev => applyAction(prev, action, {} as Parameters<typeof applyAction>[2]));
       }
-      if (response.ui.bag_delta) {
-        newState = applyBagDelta(newState, response.ui.bag_delta.add, response.ui.bag_delta.remove);
+      const snapshotState = action !== 'INIT' ? applyAction(gameState, action, {} as Parameters<typeof applyAction>[2]) : gameState;
+      let response: TurnResponse;
+      try {
+        response = await fetchTurnResponse(snapshotState, action);
+      } catch {
+        response = buildFallbackResponse();
       }
-      return newState;
-    });
-    setIsProcessing(false);
+      setLastResponse(response);
+      if (response.ui?.bag_delta) {
+        setGameState(prev => applyBagDelta(prev, response.ui.bag_delta!.add ?? [], response.ui.bag_delta!.remove ?? []));
+      }
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const restartGame = () => {
@@ -67,7 +95,7 @@ function RunScreen() {
       <div className="flex flex-col mb-4 relative z-10">
         <div className="flex justify-between items-end mb-2">
           <h1 className="text-xl md:text-2xl font-bold italic text-white font-['Playfair_Display']">THE LAST SHELTER <span className="text-xs font-mono text-gray-500 uppercase not-italic tracking-tighter ml-2">CH-01: THE COLD VOID</span></h1>
-          <div className="flex space-x-4 text-xs">
+          <div className="flex flex-wrap items-center gap-3 text-xs">
              <div className="flex items-center gap-1">
                <span className="text-gray-500">HP</span>
                <div className="w-16 md:w-24 h-2 bg-gray-800 rounded-full overflow-hidden">
@@ -80,6 +108,21 @@ function RunScreen() {
                  <div className="h-full bg-yellow-500 transition-all duration-500" style={{ width: `${gameState.exposure}%` }}></div>
                </div>
              </div>
+             <div className="flex items-center gap-1">
+               <span className="text-gray-500">电量</span>
+               <div className="w-16 md:w-24 h-2 bg-gray-800 rounded-full overflow-hidden">
+                 <div className="h-full bg-blue-500 transition-all duration-500" style={{ width: `${Math.max(0, Math.min(100, (gameState.battery ?? BATTERY_MAX) / BATTERY_MAX * 100))}%` }}></div>
+               </div>
+               <span className="text-[10px] font-mono text-gray-400 tabular-nums">{gameState.battery ?? BATTERY_MAX}/{BATTERY_MAX}</span>
+             </div>
+             {(gameState.battery ?? BATTERY_MAX) <= 0 && (
+               <span className="px-2 py-0.5 text-[10px] font-bold text-red-500 border border-red-700 bg-black/60">黑暗模式</span>
+             )}
+             {import.meta.env.DEV && (
+               <div className="text-[10px] text-gray-500">
+                 DEV turn={gameState.turn_index} action={String(lastActionType)} battery={gameState.battery}
+               </div>
+             )}
           </div>
         </div>
         <div className="relative w-full h-1.5 bg-gray-900 rounded-full overflow-hidden flex items-center">
@@ -93,6 +136,11 @@ function RunScreen() {
           <span>TURN {gameState.turn_index}/{MAX_TURNS}</span>
           <span>END</span>
         </div>
+        {import.meta.env.DEV && (
+          <div className="mt-2 px-2 py-1 text-[10px] font-mono text-gray-500 bg-black/60 border border-gray-700 rounded">
+            电量: {gameState.battery ?? BATTERY_MAX}/{BATTERY_MAX} · 上次操作: {lastActionType ?? '-'}
+          </div>
+        )}
       </div>
       <div className="flex-1 flex flex-col md:flex-row gap-4 overflow-hidden relative z-10">
         <div className="w-full md:w-1/3 h-64 md:h-auto flex flex-col">
@@ -169,7 +217,10 @@ function RunScreen() {
                   <button
                     key={i}
                     disabled={isProcessing}
-                    onClick={() => handleTurn(choice.action_type)}
+                    onClick={() => {
+                      setLastActionType(choice.action_type);
+                      handleTurn(choice.action_type);
+                    }}
                     className="group relative p-3 bg-gray-900 hover:bg-white/5 border border-gray-800 hover:border-gray-500 text-left transition disabled:opacity-50"
                   >
                     <div className="flex justify-between items-start mb-1">

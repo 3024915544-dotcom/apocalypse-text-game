@@ -1,6 +1,6 @@
 
 import { GameState, ActionType, ResourceDelta, BagItem } from "./types";
-import { GRID_SIZE, MAX_TURNS, INITIAL_RESOURCES, BAG_CAPACITY } from "./constants";
+import { GRID_SIZE, MAX_TURNS, INITIAL_RESOURCES, BAG_CAPACITY, BATTERY_MAX, BATTERY_COST_MOVE, BATTERY_COST_SEARCH, DARK_MODE_EXTRA_MOVE, DARK_MODE_EXTRA_SEARCH, DARK_MODE_EXTRA_EXPOSURE } from "./constants";
 
 export function createInitialState(): GameState {
   const player_x = 0;
@@ -14,6 +14,7 @@ export function createInitialState(): GameState {
 
   const state: GameState = {
     ...INITIAL_RESOURCES,
+    battery: BATTERY_MAX,
     turn_index: 0,
     player_pos: { x: player_x, y: player_y },
     exit_pos: { x: exit_x, y: exit_y },
@@ -63,13 +64,29 @@ export function applyAction(state: GameState, actionType: ActionType, suggestion
     } else {
       nextState.logs.push(`撞到了废墟墙壁。`);
     }
-  } else if (actionType === 'SEARCH') {
+  } else if (actionType === 'SEARCH' || (actionType as string).startsWith('SEARCH_') || actionType === 'LOOT' || actionType === 'SCAN') {
     nextState.logs.push(`你在瓦砾中翻找。`);
+  }
+
+  // 1.5 Battery cost (引擎权威)：搜索类用搜索扣电，其它（含 SILENCE）默认按移动扣电；黑暗模式额外扣电；clamp 到 [0, BATTERY_MAX]
+  const prevBattery = nextState.battery ?? BATTERY_MAX;
+  const actionKey = String(actionType);
+  const isSearchLike = actionKey === 'SEARCH' || actionKey.startsWith('SEARCH_') || actionKey === 'LOOT' || actionKey === 'SCAN';
+  const inDark = prevBattery <= 0;
+  const cost = isSearchLike
+    ? BATTERY_COST_SEARCH + (inDark ? DARK_MODE_EXTRA_SEARCH : 0)
+    : BATTERY_COST_MOVE + (inDark ? DARK_MODE_EXTRA_MOVE : 0);
+  nextState.battery = Math.max(0, Math.min(BATTERY_MAX, prevBattery - cost));
+  if (prevBattery > 0 && nextState.battery <= 0) {
+    nextState.logs.push(`电量耗尽，进入黑暗模式。`);
   }
 
   // 2. Resource updates (Cost of action + Suggestion)
   nextState.turn_index += 1;
   nextState.exposure += 5; // Passive cold
+  if (nextState.battery <= 0) {
+    nextState.exposure += DARK_MODE_EXTRA_EXPOSURE;
+  }
   nextState.water -= 0.2;
   nextState.food -= 0.2;
 
@@ -85,6 +102,7 @@ export function applyAction(state: GameState, actionType: ActionType, suggestion
   // 3. Clamping
   nextState.hp = Math.min(100, Math.max(0, nextState.hp));
   nextState.exposure = Math.min(100, Math.max(0, nextState.exposure));
+  nextState.battery = Math.min(BATTERY_MAX, Math.max(0, nextState.battery ?? BATTERY_MAX));
   nextState.water = Math.max(0, nextState.water);
   nextState.food = Math.max(0, nextState.food);
   nextState.fuel = Math.max(0, nextState.fuel);
