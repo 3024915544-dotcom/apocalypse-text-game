@@ -8,6 +8,21 @@ import { getRunConfig } from './game/runConfig';
 import { pickKeptItem, setStoredKeptItem } from './game/insurance';
 import ShelterHome from './ShelterHome';
 
+type LogTurn = {
+  id: string;
+  turn_index: number;
+  action: string;
+  scene_blocks: TurnResponse['scene_blocks'];
+  at: number;
+};
+
+function actionLabel(action: ActionType): string {
+  if (action === 'INIT') return '开始';
+  if (action === 'MOVE_N' || action === 'MOVE_E' || action === 'MOVE_S' || action === 'MOVE_W') return '移动';
+  if (action === 'SEARCH') return '搜索';
+  return String(action);
+}
+
 /** 局内界面：现有局内 UI/逻辑原封不动。 */
 function RunScreen() {
   const [gameState, setGameState] = useState<GameState>(createInitialState());
@@ -20,6 +35,9 @@ function RunScreen() {
   const [pendingAddItem, setPendingAddItem] = useState<BagItem | null>(null);
   const [replaceSlotMode, setReplaceSlotMode] = useState(false);
   const [insuranceKeptName, setInsuranceKeptName] = useState<string | null>(null);
+  const [logbook, setLogbook] = useState<LogTurn[]>([]);
+  const [isLogbookOpen, setIsLogbookOpen] = useState(false);
+  const [logbookOpenSet, setLogbookOpenSet] = useState<Record<number, boolean>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasCreditedRef = useRef(false);
   const devPickupCounterRef = useRef(0);
@@ -94,6 +112,20 @@ function RunScreen() {
         response = buildFallbackResponse();
       }
       setLastResponse(response);
+      const turnIdx = snapshotState.turn_index;
+      const logEntry: LogTurn = {
+        id: `${turnIdx}-${Date.now()}`,
+        turn_index: turnIdx,
+        action: String(action),
+        scene_blocks: response.scene_blocks ?? [],
+        at: Date.now(),
+      };
+      setLogbook(prev => [...prev, logEntry]);
+      setLogbookOpenSet(prev => ({
+        ...prev,
+        [turnIdx]: true,
+        [turnIdx - 1]: true,
+      }));
       const adds = response.ui?.bag_delta?.add ?? [];
       const removes = response.ui?.bag_delta?.remove ?? [];
       if (response.ui?.bag_delta) {
@@ -130,6 +162,8 @@ function RunScreen() {
     setIsBagModalOpen(false);
     setPendingAddItem(null);
     setReplaceSlotMode(false);
+    setLogbook([]);
+    setLogbookOpenSet({});
     handleTurn('INIT');
   };
 
@@ -238,7 +272,7 @@ function RunScreen() {
         {import.meta.env.DEV && (
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <div className="px-2 py-1 text-[10px] font-mono text-gray-500 bg-black/60 border border-gray-700 rounded">
-              电量: {gameState.battery ?? BATTERY_MAX}/{BATTERY_MAX} · 上次操作: {lastActionType ?? '-'}
+              电量: {gameState.battery ?? BATTERY_MAX}/{BATTERY_MAX} · 上次操作: {lastActionType ?? '-'} · logbook={logbook.length}
             </div>
             <button
               type="button"
@@ -300,9 +334,18 @@ function RunScreen() {
           </div>
         </div>
         <div className="flex-1 flex flex-col bg-[#111] border border-gray-800 shadow-2xl overflow-hidden relative">
-          <div className="p-3 border-b border-gray-800 flex justify-between items-center text-[10px] bg-[#0d0d0d]">
+          <div className="p-3 border-b border-gray-800 flex justify-between items-center gap-2 text-[10px] bg-[#0d0d0d]">
              <span className="text-orange-500">TERMINAL.LOG</span>
-             {isProcessing && <span className="animate-pulse text-blue-400 italic">TRANSMITTING...</span>}
+             <div className="flex items-center gap-2">
+               {isProcessing && <span className="animate-pulse text-blue-400 italic">TRANSMITTING...</span>}
+               <button
+                 type="button"
+                 className="px-2 py-1 border border-gray-600 text-gray-400 hover:bg-gray-800 hover:text-white transition text-[10px]"
+                 onClick={() => setIsLogbookOpen(true)}
+               >
+                 日志簿
+               </button>
+             </div>
           </div>
           <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-6">
             {lastResponse?.scene_blocks.map((block, i) => (
@@ -444,6 +487,56 @@ function RunScreen() {
           </div>
         </div>
       )}
+
+      {isLogbookOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="logbook-title"
+          onClick={(e) => e.target === e.currentTarget && setIsLogbookOpen(false)}
+        >
+          <div className="w-[90%] max-w-xl h-[80vh] flex flex-col bg-[#111] border border-gray-700 shadow-2xl rounded-sm overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center p-3 border-b border-gray-800 bg-[#0d0d0d] shrink-0">
+              <h2 id="logbook-title" className="text-base font-bold text-white">日志簿</h2>
+              <button type="button" className="px-2 py-1 text-xs text-gray-400 hover:text-white border border-gray-600 hover:bg-gray-800 transition" onClick={() => setIsLogbookOpen(false)}>关闭</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {[...logbook].reverse().map((entry) => {
+                const maxT = logbook.length ? Math.max(...logbook.map(l => l.turn_index)) : -1;
+                const isRecent2 = entry.turn_index === maxT || entry.turn_index === maxT - 1;
+                const isOpen = logbookOpenSet[entry.turn_index] ?? isRecent2;
+                return (
+                  <div key={entry.id} className="border border-gray-800 rounded overflow-hidden bg-[#0d0d0d]">
+                    <button
+                      type="button"
+                      className="w-full px-3 py-2 text-left text-sm text-gray-300 hover:bg-gray-800/80 flex justify-between items-center"
+                      onClick={() => setLogbookOpenSet(prev => ({ ...prev, [entry.turn_index]: !(prev[entry.turn_index] ?? isRecent2) }))}
+                    >
+                      <span>第 {entry.turn_index} 回合 · {actionLabel(entry.action as ActionType)}</span>
+                      <span className="text-[10px] text-gray-500">{isOpen ? '▼' : '▶'}</span>
+                    </button>
+                    {isOpen && (
+                      <div className="px-3 pb-3 pt-1 space-y-3 border-t border-gray-800">
+                        {entry.scene_blocks.map((block, i) => (
+                          <div key={i}>
+                            {block.type === 'TITLE' && <h3 className="text-sm font-bold text-white mb-1 uppercase tracking-widest">{block.content}</h3>}
+                            {block.type === 'EVENT' && <p className="text-xs leading-relaxed text-gray-300 font-sans">{block.content}</p>}
+                            {block.type === 'RESULT' && <p className="text-xs border-l-2 border-red-900 pl-2 italic text-gray-400 font-sans">{block.content}</p>}
+                            {block.type === 'AFTERTASTE' && <p className="text-[11px] text-gray-500 mt-1 italic font-serif">"{block.content}"</p>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {logbook.length === 0 && <p className="text-xs text-gray-500 text-center py-4">暂无记录</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
       <style>{`
         @keyframes fade-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
         .animate-fade-in { animation: fade-in 0.4s ease-out forwards; }
