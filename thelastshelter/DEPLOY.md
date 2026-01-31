@@ -20,7 +20,7 @@ npm install
 npm run build
 ```
 
-输出目录为 `dist/`。
+输出目录为 `dist/`。**Cloudflare Pages 的 Build output directory 必须设置为 `dist`**，否则静态资源路径会错误。
 
 ### 3. 在 Cloudflare Dashboard 创建 Pages 项目
 
