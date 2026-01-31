@@ -179,7 +179,7 @@ function safetyFallbackResponse(state: GameState, reason: string): TurnResponse 
     },
     suggestion: { delta: {} },
     memory_update: "",
-    safety_fallback: `safety_fallback: ${reason}`,
+    safety_fallback: reason,
   };
 }
 
@@ -264,7 +264,8 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       return { ok: false, reason: "validate fail" };
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
-      if (/DeepSeek API 5\d\d/.test(err)) return { ok: false, reason: err.replace(/^.*(DeepSeek API \d+).*$/, "$1") };
+      const deepseekMatch = err.match(/DeepSeek API (\d+)/);
+      if (deepseekMatch) return { ok: false, reason: `deepseek ${deepseekMatch[1]}` };
       return { ok: false, reason: "parse fail" };
     }
   };
