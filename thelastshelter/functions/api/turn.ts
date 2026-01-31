@@ -101,6 +101,17 @@ interface TurnResponse {
   safety_fallback?: string;
 }
 
+/** body.action 为 string 用其值；为 object 且有 type 用 body.action.type；否则尝试 actionType / choiceId / choice_id；缺省 INIT。 */
+function resolveAction(body: Record<string, unknown>): string {
+  const a = body.action;
+  if (isString(a)) return a;
+  if (isObject(a) && isString(a.type)) return a.type as string;
+  if (isString(body.actionType)) return body.actionType as string;
+  if (isString(body.choiceId)) return body.choiceId as string;
+  if (isString(body.choice_id)) return body.choice_id as string;
+  return "INIT";
+}
+
 function buildUserPrompt(state: GameState, actionType: string): string {
   const fogCount = (state.fog as boolean[]).filter((f) => !f).length;
   return `
@@ -148,7 +159,7 @@ interface GameState {
   history: string[];
 }
 
-function safetyFallbackResponse(state: GameState): TurnResponse {
+function safetyFallbackResponse(state: GameState, reason: string): TurnResponse {
   return {
     scene_blocks: [{ type: "EVENT", content: "连接异常，请稍后再试。" }],
     choices: [
@@ -168,16 +179,24 @@ function safetyFallbackResponse(state: GameState): TurnResponse {
     },
     suggestion: { delta: {} },
     memory_update: "",
-    safety_fallback: "服务暂时不可用，已返回安全兜底。",
+    safety_fallback: `safety_fallback: ${reason}`,
   };
 }
 
-/** 为兼容前端：scene_blocks 同时带 content 与 text（同值）；choices 同时带 action_type 与 action（同值）。不改变校验逻辑。 */
+/** 校验通过后再做：scene_blocks 同时带 content 与 text（有其一则补齐另一）；choices 同时带 action_type 与 action（缺省 SILENCE）。 */
 function normalizeForFrontend(res: TurnResponse): TurnResponse {
   return {
     ...res,
-    scene_blocks: res.scene_blocks.map((b) => ({ ...b, content: b.content, text: b.content })),
-    choices: res.choices.map((c) => ({ ...c, action_type: c.action_type as string, action: c.action_type as string })),
+    scene_blocks: res.scene_blocks.map((b) => {
+      const rec = b as Record<string, unknown>;
+      const content = (isString(rec.content) ? rec.content : isString(rec.text) ? rec.text : "") as string;
+      return { ...b, content, text: content };
+    }),
+    choices: res.choices.map((c) => {
+      const rec = c as Record<string, unknown>;
+      const actionType = (isString(rec.action_type) ? rec.action_type : isString(rec.action) ? rec.action : "SILENCE") as string;
+      return { ...c, action_type: actionType, action: actionType };
+    }),
   };
 }
 
@@ -218,17 +237,17 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     });
   }
 
-  let body: { state?: GameState; action?: string };
+  let body: Record<string, unknown>;
   try {
-    body = (await request.json()) as { state?: GameState; action?: string };
+    body = (await request.json()) as Record<string, unknown>;
   } catch {
     return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
     });
   }
-  const state = body.state;
-  const actionType = body.action ?? "INIT";
+  const state = body.state as GameState | undefined;
+  const actionType = resolveAction(body);
   if (!state || !isObject(state)) {
     return new Response(JSON.stringify({ error: "Missing or invalid state" }), {
       status: 400,
@@ -237,23 +256,25 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   }
 
   const userPrompt = buildUserPrompt(state, actionType);
-  const tryOnce = async (): Promise<TurnResponse | null> => {
+  const tryOnce = async (): Promise<{ ok: true; data: TurnResponse } | { ok: false; reason: string }> => {
     try {
       const raw = await callDeepSeek(apiKey, SYSTEM_INSTRUCTION, userPrompt);
       const parsed = JSON.parse(raw) as unknown;
-      if (validateTurnResponse(parsed)) return parsed as TurnResponse;
-      return null;
-    } catch {
-      return null;
+      if (validateTurnResponse(parsed)) return { ok: true, data: parsed as TurnResponse };
+      return { ok: false, reason: "validate fail" };
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      if (/DeepSeek API 5\d\d/.test(err)) return { ok: false, reason: err.replace(/^.*(DeepSeek API \d+).*$/, "$1") };
+      return { ok: false, reason: "parse fail" };
     }
   };
 
-  let result = await tryOnce();
-  if (result === null) result = await tryOnce();
-  if (result === null) result = safetyFallbackResponse(state);
-  result = normalizeForFrontend(result);
+  let attempt = await tryOnce();
+  if (!attempt.ok) attempt = await tryOnce();
+  const result = attempt.ok ? attempt.data : safetyFallbackResponse(state, attempt.reason);
+  const normalized = normalizeForFrontend(result);
 
-  return new Response(JSON.stringify(result), {
+  return new Response(JSON.stringify(normalized), {
     status: 200,
     headers: {
       "Content-Type": "application/json",
