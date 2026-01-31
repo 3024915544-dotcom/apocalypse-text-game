@@ -219,8 +219,8 @@ async function callDeepSeek(apiKey: string, systemPrompt: string, userPrompt: st
     }),
   });
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`DeepSeek API ${res.status}: ${err}`);
+    const err = (await res.text()).slice(0, 200);
+    throw new Error(`DeepSeek ${res.status}: ${err}`);
   }
   const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
   const content = json.choices?.[0]?.message?.content?.trim();
@@ -230,7 +230,7 @@ async function callDeepSeek(apiKey: string, systemPrompt: string, userPrompt: st
 
 export const onRequestPost: PagesFunction<Env> = async (context) => {
   const { request, env } = context;
-  const apiKey = env.DEEPSEEK_API_KEY;
+  const apiKey = (env.DEEPSEEK_API_KEY || "").trim();
   if (!apiKey) {
     return new Response(JSON.stringify({ error: "DEEPSEEK_API_KEY not configured" }), {
       status: 500,
@@ -265,8 +265,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       return { ok: false, reason: "validate fail" };
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
-      const deepseekMatch = err.match(/DeepSeek API (\d+)/);
-      if (deepseekMatch) return { ok: false, reason: `deepseek ${deepseekMatch[1]}` };
+      if (err.startsWith("DeepSeek ")) return { ok: false, reason: err };
       return { ok: false, reason: "parse fail" };
     }
   };
