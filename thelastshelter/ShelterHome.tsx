@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { getRunConfig, setRunConfig, defaultRunConfig, type RunConfigVariantId } from "./game/runConfig";
+import { getSurvivalPoints, spendSurvivalPoints } from "./game/economy";
+import { INSURANCE_COST } from "./constants";
 
 const VARIANT_LABELS: Record<RunConfigVariantId, string> = {
   night: "夜行",
@@ -14,15 +16,27 @@ function readInitialConfig() {
 const ShelterHome: React.FC = () => {
   const [regionId, setRegionId] = useState<string>(() => readInitialConfig().regionId);
   const [variantId, setVariantId] = useState<RunConfigVariantId>(() => readInitialConfig().variantId);
+  const [insuranceChecked, setInsuranceChecked] = useState(false);
+  const [survivalPoints, setSurvivalPoints] = useState(0);
 
   useEffect(() => {
     const cfg = getRunConfig();
     setRegionId(cfg.regionId);
     setVariantId(cfg.variantId);
-  }, []); // 仅挂载时跑一次，不依赖 variantId，避免覆盖用户选择
+  }, []);
+
+  useEffect(() => {
+    setSurvivalPoints(getSurvivalPoints());
+  }, []);
 
   const handleStart = () => {
-    setRunConfig({ regionId, variantId, ts: Date.now() });
+    if (insuranceChecked) {
+      if (!spendSurvivalPoints(INSURANCE_COST)) return;
+      setRunConfig({ regionId, variantId, ts: Date.now(), insurancePurchased: true });
+    } else {
+      setRunConfig({ regionId, variantId, ts: Date.now(), insurancePurchased: false });
+    }
+    setSurvivalPoints(getSurvivalPoints());
     window.location.hash = "#/run";
   };
 
@@ -53,6 +67,29 @@ const ShelterHome: React.FC = () => {
 
         <div className="border border-gray-700 bg-[#111] p-5 rounded-sm shadow-xl">
           <h2 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-800 pb-2 mb-3">
+            局前物资
+          </h2>
+          <p className="text-sm text-gray-300 mb-3">当前生存点：<span className="font-bold text-orange-400">{survivalPoints}</span></p>
+          <label className="flex items-center gap-2 cursor-pointer group">
+            <input
+              type="checkbox"
+              checked={insuranceChecked}
+              onChange={(e) => setInsuranceChecked(e.target.checked)}
+              disabled={survivalPoints < INSURANCE_COST}
+              className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-orange-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            />
+            <span className={survivalPoints < INSURANCE_COST ? "text-gray-500" : "text-gray-300 group-hover:text-white"}>
+              购买保险袋（本局）
+            </span>
+            <span className="text-xs text-gray-500">— {INSURANCE_COST} 生存点</span>
+          </label>
+          {survivalPoints < INSURANCE_COST && insuranceChecked === false && (
+            <p className="text-xs text-amber-600/90 mt-1">生存点不足时无法勾选</p>
+          )}
+        </div>
+
+        <div className="border border-gray-700 bg-[#111] p-5 rounded-sm shadow-xl">
+          <h2 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-800 pb-2 mb-3">
             剧本变体
           </h2>
           <div className="grid grid-cols-2 gap-3">
@@ -78,8 +115,9 @@ const ShelterHome: React.FC = () => {
 
         <button
           type="button"
-          className="w-full py-4 border-2 border-white text-white font-bold text-lg hover:bg-white hover:text-black transition uppercase tracking-wider"
+          className="w-full py-4 border-2 border-white text-white font-bold text-lg hover:bg-white hover:text-black transition uppercase tracking-wider disabled:opacity-50 disabled:cursor-not-allowed"
           onClick={handleStart}
+          disabled={insuranceChecked && survivalPoints < INSURANCE_COST}
         >
           开始探索
         </button>

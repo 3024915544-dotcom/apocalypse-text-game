@@ -13,6 +13,7 @@ export interface RunConfig {
   regionId: string;
   variantId: RunConfigVariantId;
   ts: number;
+  insurancePurchased?: boolean;
 }
 
 export const defaultRunConfig: RunConfig = {
@@ -20,6 +21,7 @@ export const defaultRunConfig: RunConfig = {
   regionId: "cold_block",
   variantId: "night",
   ts: 0,
+  insurancePurchased: false,
 };
 
 function isVariantId(v: unknown): v is RunConfigVariantId {
@@ -33,7 +35,8 @@ function parseRunConfig(raw: unknown): RunConfig {
   const regionId = typeof o.regionId === "string" ? o.regionId : defaultRunConfig.regionId;
   const variantId = isVariantId(o.variantId) ? o.variantId : defaultRunConfig.variantId;
   const ts = typeof o.ts === "number" && Number.isFinite(o.ts) ? o.ts : Date.now();
-  return { version, regionId, variantId, ts };
+  const insurancePurchased = typeof o.insurancePurchased === "boolean" ? o.insurancePurchased : defaultRunConfig.insurancePurchased ?? false;
+  return { version, regionId, variantId, ts, insurancePurchased };
 }
 
 /** 从 localStorage 读取；解析失败或缺失时返回默认配置。 */

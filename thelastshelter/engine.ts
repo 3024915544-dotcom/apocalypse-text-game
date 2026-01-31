@@ -122,6 +122,12 @@ export function applyAction(state: GameState, actionType: ActionType, suggestion
   return nextState;
 }
 
+/** 计算当前背包空位数（0..BAG_CAPACITY）。 */
+export function getEmptyBagSlots(state: GameState): number {
+  const used = (state.bag || []).filter(Boolean).length;
+  return Math.max(0, Math.min(BAG_CAPACITY, BAG_CAPACITY - used));
+}
+
 export function applyBagDelta(state: GameState, add: BagItem[], remove: string[]): GameState {
   let newBag = [...state.bag];
   remove.forEach(id => {

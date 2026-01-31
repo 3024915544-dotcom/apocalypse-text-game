@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { GameState, TurnResponse, ActionType, RiskLevel, DirectionHint } from './types';
-import { createInitialState, applyAction, applyBagDelta } from './engine';
+import { GameState, TurnResponse, ActionType, RiskLevel, DirectionHint, BagItem } from './types';
+import { createInitialState, applyAction, applyBagDelta, getEmptyBagSlots } from './engine';
 import { fetchTurnResponse } from './geminiService';
 import { GRID_SIZE, MAX_TURNS, MILESTONES, BAG_CAPACITY, BATTERY_MAX } from './constants';
 import { getSurvivalPoints, addSurvivalPoints, computeRunPoints } from './game/economy';
+import { getRunConfig } from './game/runConfig';
+import { pickKeptItem, setStoredKeptItem } from './game/insurance';
 import ShelterHome from './ShelterHome';
 
 /** 局内界面：现有局内 UI/逻辑原封不动。 */
@@ -13,8 +15,14 @@ function RunScreen() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [settlementRunPoints, setSettlementRunPoints] = useState<number | null>(null);
   const [lastActionType, setLastActionType] = useState<ActionType | null>(null);
+  const [pendingAdds, setPendingAdds] = useState<BagItem[]>([]);
+  const [isBagModalOpen, setIsBagModalOpen] = useState(false);
+  const [pendingAddItem, setPendingAddItem] = useState<BagItem | null>(null);
+  const [replaceSlotMode, setReplaceSlotMode] = useState(false);
+  const [insuranceKeptName, setInsuranceKeptName] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasCreditedRef = useRef(false);
+  const devPickupCounterRef = useRef(0);
 
   useEffect(() => {
     handleTurn('INIT');
@@ -26,12 +34,25 @@ function RunScreen() {
     }
   }, [lastResponse]);
 
-  // 结算入账：仅在本局首次变为非 PLAYING 时执行一次
+  // 结算入账：仅在本局首次变为非 PLAYING 时执行一次；死亡且保险时按保住的一件计分
   useEffect(() => {
     if (gameState.status === 'PLAYING') return;
     if (hasCreditedRef.current) return;
     hasCreditedRef.current = true;
-    const points = computeRunPoints(gameState);
+    const runConfig = getRunConfig();
+    let points: number;
+    if (gameState.status === 'LOSS' && runConfig.insurancePurchased === true) {
+      const keptItem = pickKeptItem(gameState.bag);
+      if (keptItem) {
+        setStoredKeptItem(keptItem);
+        setInsuranceKeptName(keptItem.name);
+        points = computeRunPoints(gameState, keptItem);
+      } else {
+        points = computeRunPoints(gameState);
+      }
+    } else {
+      points = computeRunPoints(gameState);
+    }
     addSurvivalPoints(points);
     setSettlementRunPoints(points);
   }, [gameState.status]);
@@ -73,8 +94,26 @@ function RunScreen() {
         response = buildFallbackResponse();
       }
       setLastResponse(response);
+      const adds = response.ui?.bag_delta?.add ?? [];
+      const removes = response.ui?.bag_delta?.remove ?? [];
       if (response.ui?.bag_delta) {
-        setGameState(prev => applyBagDelta(prev, response.ui.bag_delta!.add ?? [], response.ui.bag_delta!.remove ?? []));
+        if (adds.length > 0) {
+          const emptySlots = getEmptyBagSlots(gameState);
+          if (emptySlots >= adds.length) {
+            setGameState(prev => applyBagDelta(prev, adds, removes));
+          } else {
+            const fillFirst = adds.slice(0, emptySlots);
+            const rest = adds.slice(emptySlots);
+            if (fillFirst.length > 0) {
+              setGameState(prev => applyBagDelta(prev, fillFirst, removes));
+            }
+            setPendingAdds(prev => [...prev, ...rest]);
+            setPendingAddItem(rest[0] ?? null);
+            setIsBagModalOpen(true);
+          }
+        } else {
+          setGameState(prev => applyBagDelta(prev, [], removes));
+        }
       }
     } finally {
       setIsProcessing(false);
@@ -84,9 +123,69 @@ function RunScreen() {
   const restartGame = () => {
     hasCreditedRef.current = false;
     setSettlementRunPoints(null);
+    setInsuranceKeptName(null);
     setGameState(createInitialState());
     setLastResponse(null);
+    setPendingAdds([]);
+    setIsBagModalOpen(false);
+    setPendingAddItem(null);
+    setReplaceSlotMode(false);
     handleTurn('INIT');
+  };
+
+  const handleBagDiscard = () => {
+    setPendingAdds(prev => {
+      const next = prev.slice(1);
+      if (next.length === 0) {
+        setIsBagModalOpen(false);
+        setPendingAddItem(null);
+      } else {
+        setPendingAddItem(next[0]);
+      }
+      return next;
+    });
+  };
+
+  const handleBagReplaceSlot = (slotIndex: number) => {
+    const item = gameState.bag[slotIndex];
+    const current = pendingAddItem;
+    if (!item || !current) return;
+    setGameState(prev => applyBagDelta(prev, [current], [item.id]));
+    setPendingAdds(prev => {
+      const next = prev.slice(1);
+      if (next.length === 0) {
+        setIsBagModalOpen(false);
+        setPendingAddItem(null);
+        setReplaceSlotMode(false);
+      } else {
+        setPendingAddItem(next[0]);
+        setReplaceSlotMode(false);
+      }
+      return next;
+    });
+  };
+
+  /** DEV-only: 拾取一件测试物品，走真实满包/队列路径。 */
+  const devPickupOneItem = () => {
+    devPickupCounterRef.current += 1;
+    const n = devPickupCounterRef.current;
+    const testItem: BagItem = {
+      id: `dev-pickup-${Date.now()}-${n}`,
+      name: `测试物品 #${n}`,
+      type: 'MISC',
+    };
+    if (isBagModalOpen) {
+      setPendingAdds(prev => [...prev, testItem]);
+      return;
+    }
+    const emptySlots = getEmptyBagSlots(gameState);
+    if (emptySlots >= 1) {
+      setGameState(prev => applyBagDelta(prev, [testItem], []));
+    } else {
+      setPendingAdds(prev => [...prev, testItem]);
+      setPendingAddItem(testItem);
+      setIsBagModalOpen(true);
+    }
   };
 
   return (
@@ -137,8 +236,33 @@ function RunScreen() {
           <span>END</span>
         </div>
         {import.meta.env.DEV && (
-          <div className="mt-2 px-2 py-1 text-[10px] font-mono text-gray-500 bg-black/60 border border-gray-700 rounded">
-            电量: {gameState.battery ?? BATTERY_MAX}/{BATTERY_MAX} · 上次操作: {lastActionType ?? '-'}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <div className="px-2 py-1 text-[10px] font-mono text-gray-500 bg-black/60 border border-gray-700 rounded">
+              电量: {gameState.battery ?? BATTERY_MAX}/{BATTERY_MAX} · 上次操作: {lastActionType ?? '-'}
+            </div>
+            <button
+              type="button"
+              className="px-2 py-1 text-[10px] font-mono text-amber-500 border border-amber-700 bg-black/60 hover:bg-amber-900/30 rounded"
+              onClick={() => {
+                setGameState(prev => ({
+                  ...prev,
+                  bag: Array.from({ length: BAG_CAPACITY }, (_, i) => ({
+                    id: `dev-fill-${i}`,
+                    name: `测试物品${i + 1}`,
+                    type: 'MISC',
+                  })),
+                }));
+              }}
+            >
+              一键填满背包（测试）
+            </button>
+            <button
+              type="button"
+              className="px-2 py-1 text-[10px] font-mono text-emerald-500 border border-emerald-700 bg-black/60 hover:bg-emerald-900/30 rounded"
+              onClick={devPickupOneItem}
+            >
+              拾取一件物品（测试）
+            </button>
           </div>
         )}
       </div>
@@ -198,6 +322,9 @@ function RunScreen() {
                 <div className="text-left border border-gray-600 bg-[#0d0d0d] p-4 space-y-2">
                   <p className="text-sm text-gray-300">本局生存点：<span className="font-bold text-orange-400">+{settlementRunPoints ?? computeRunPoints(gameState)}</span></p>
                   <p className="text-sm text-gray-300">累计生存点：<span className="font-bold text-white">{getSurvivalPoints()}</span></p>
+                  {insuranceKeptName != null && (
+                    <p className="text-sm text-gray-300">保险袋保住：『{insuranceKeptName}』</p>
+                  )}
                 </div>
                 <div className="flex flex-wrap justify-center gap-3">
                   <button onClick={() => { window.location.hash = '#/'; }} className="px-6 py-2 border border-gray-500 text-gray-300 hover:bg-gray-700 hover:text-white transition text-sm font-medium">
@@ -263,6 +390,60 @@ function RunScreen() {
           </div>
         </div>
       </div>
+
+      {isBagModalOpen && pendingAddItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70" role="dialog" aria-modal="true" aria-labelledby="bag-modal-title">
+          <div className="w-full max-w-sm bg-[#111] border border-gray-700 shadow-2xl rounded-sm p-5 space-y-4">
+            <h2 id="bag-modal-title" className="text-lg font-bold text-white">背包已满</h2>
+            <p className="text-sm text-gray-300">你发现了『{pendingAddItem.name}』，要怎么处理？</p>
+            {!replaceSlotMode ? (
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  className="w-full py-3 border border-gray-600 text-gray-300 hover:bg-gray-800 transition text-sm font-medium"
+                  onClick={handleBagDiscard}
+                >
+                  丢弃新物品
+                </button>
+                <button
+                  type="button"
+                  className="w-full py-3 border border-orange-600 text-orange-400 hover:bg-orange-900/40 transition text-sm font-medium"
+                  onClick={() => setReplaceSlotMode(true)}
+                >
+                  替换背包物品
+                </button>
+              </div>
+            ) : (
+              <>
+                <p className="text-xs text-gray-500">点选一个格子替换为该物品：</p>
+                <div className="grid grid-cols-4 gap-2">
+                  {Array.from({ length: BAG_CAPACITY }).map((_, i) => {
+                    const item = gameState.bag[i];
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        disabled={!item}
+                        className={`h-12 border text-[10px] truncate p-1 transition ${item ? 'border-gray-600 bg-gray-900 hover:border-orange-500 hover:bg-orange-900/30' : 'border-dashed border-gray-800 bg-transparent opacity-40 cursor-not-allowed'}`}
+                        onClick={() => item && handleBagReplaceSlot(i)}
+                      >
+                        {item ? item.name : '—'}
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  type="button"
+                  className="w-full py-2 text-xs text-gray-500 hover:text-gray-300"
+                  onClick={() => setReplaceSlotMode(false)}
+                >
+                  取消
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
       <style>{`
         @keyframes fade-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
         .animate-fade-in { animation: fade-in 0.4s ease-out forwards; }

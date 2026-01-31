@@ -10,6 +10,7 @@ export const BATTERY_COST_SEARCH = 3;
 export const DARK_MODE_EXTRA_MOVE = 1;
 export const DARK_MODE_EXTRA_SEARCH = 2;
 export const DARK_MODE_EXTRA_EXPOSURE = 10;
+export const INSURANCE_COST = 50;
 
 export const INITIAL_RESOURCES = {
   hp: 100,

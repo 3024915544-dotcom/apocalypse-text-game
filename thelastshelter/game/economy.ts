@@ -33,10 +33,33 @@ export function addSurvivalPoints(delta: number): void {
   }
 }
 
-/** 根据本局终态背包带出物计算本局生存点（不入账，仅用于展示与传入 addSurvivalPoints）。 */
-export function computeRunPoints(state: GameState): number {
+/** 扣除生存点并写回 localStorage；足够则扣并返回 true，不够返回 false。 */
+export function spendSurvivalPoints(cost: number): boolean {
+  if (cost <= 0) return true;
+  try {
+    const current = getSurvivalPoints();
+    if (current < cost) return false;
+    localStorage.setItem(STORAGE_KEY, String(Math.floor(current - cost)));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 单件物品价值（用于保险袋结算）；无 value 按 1。 */
+function itemValue(item: { value?: number }): number {
+  const v = item?.value;
+  return typeof v === "number" && Number.isFinite(v) ? Math.max(0, v) : 1;
+}
+
+/** 根据本局终态背包带出物计算本局生存点（不入账，仅用于展示与传入 addSurvivalPoints）。死亡且保险时传 keptItem，仅按该件价值计。 */
+export function computeRunPoints(state: GameState, keptItem?: { value?: number } | null): number {
   if (state.status === "PLAYING") return 0;
+  if (state.status === "WIN") {
+    const lootValue = state.bag.filter(Boolean).length;
+    return lootValue;
+  }
+  if (keptItem != null) return Math.floor(itemValue(keptItem) * 0.2);
   const lootValue = state.bag.filter(Boolean).length;
-  if (state.status === "WIN") return lootValue;
   return Math.floor(lootValue * 0.2);
 }

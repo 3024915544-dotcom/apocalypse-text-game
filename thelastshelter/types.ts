@@ -32,6 +32,8 @@ export interface BagItem {
   id: string;
   name: string;
   type: 'FOOD' | 'WATER' | 'FUEL' | 'MED' | 'MISC';
+  value?: number;
+  isQuest?: boolean;
 }
 
 export interface SceneBlock {
