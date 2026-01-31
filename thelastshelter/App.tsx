@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { GameState, TurnResponse, ActionType } from './types';
 import { createInitialState, applyAction, applyBagDelta } from './engine';
 import { fetchTurnResponse } from './geminiService';
 import { GRID_SIZE, MAX_TURNS, MILESTONES, BAG_CAPACITY } from './constants';
+import { getSurvivalPoints, addSurvivalPoints, computeRunPoints } from './game/economy';
 import ShelterHome from './ShelterHome';
 
 /** 局内界面：现有局内 UI/逻辑原封不动。 */
@@ -10,7 +11,9 @@ function RunScreen() {
   const [gameState, setGameState] = useState<GameState>(createInitialState());
   const [lastResponse, setLastResponse] = useState<TurnResponse | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [settlementRunPoints, setSettlementRunPoints] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const hasCreditedRef = useRef(false);
 
   useEffect(() => {
     handleTurn('INIT');
@@ -21,6 +24,16 @@ function RunScreen() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [lastResponse]);
+
+  // 结算入账：仅在本局首次变为非 PLAYING 时执行一次
+  useEffect(() => {
+    if (gameState.status === 'PLAYING') return;
+    if (hasCreditedRef.current) return;
+    hasCreditedRef.current = true;
+    const points = computeRunPoints(gameState);
+    addSurvivalPoints(points);
+    setSettlementRunPoints(points);
+  }, [gameState.status]);
 
   const handleTurn = async (action: ActionType) => {
     if (gameState.status !== 'PLAYING' && action !== 'INIT') return;
@@ -41,6 +54,8 @@ function RunScreen() {
   };
 
   const restartGame = () => {
+    hasCreditedRef.current = false;
+    setSettlementRunPoints(null);
     setGameState(createInitialState());
     setLastResponse(null);
     handleTurn('INIT');
@@ -129,12 +144,21 @@ function RunScreen() {
             {gameState.status !== 'PLAYING' && (
               <div className="p-6 bg-black/40 border border-gray-700 text-center space-y-4">
                 <h3 className={`text-2xl font-bold ${gameState.status === 'WIN' ? 'text-green-500' : 'text-red-600'}`}>
-                  {gameState.status === 'WIN' ? 'MISSION SUCCESS' : 'SYSTEM FAILURE'}
+                  {gameState.status === 'WIN' ? '撤离成功' : '撤离失败'}
                 </h3>
                 <p className="text-xs text-gray-400">{gameState.logs[gameState.logs.length - 1]}</p>
-                <button onClick={restartGame} className="px-6 py-2 border border-white text-white hover:bg-white hover:text-black transition uppercase text-xs font-bold">
-                  REBOOT CORE
-                </button>
+                <div className="text-left border border-gray-600 bg-[#0d0d0d] p-4 space-y-2">
+                  <p className="text-sm text-gray-300">本局生存点：<span className="font-bold text-orange-400">+{settlementRunPoints ?? computeRunPoints(gameState)}</span></p>
+                  <p className="text-sm text-gray-300">累计生存点：<span className="font-bold text-white">{getSurvivalPoints()}</span></p>
+                </div>
+                <div className="flex flex-wrap justify-center gap-3">
+                  <button onClick={() => { window.location.hash = '#/'; }} className="px-6 py-2 border border-gray-500 text-gray-300 hover:bg-gray-700 hover:text-white transition text-sm font-medium">
+                    返回避难所
+                  </button>
+                  <button onClick={restartGame} className="px-6 py-2 border border-white text-white hover:bg-white hover:text-black transition text-sm font-bold">
+                    再来一局
+                  </button>
+                </div>
               </div>
             )}
           </div>
