@@ -31,7 +31,7 @@ const ShelterHome: React.FC = () => {
   const [selectedContracts, setSelectedContracts] = useState<string[]>(() => readInitialConfig().selectedContracts ?? []);
   const [insuranceChecked, setInsuranceChecked] = useState(false);
   const [survivalPoints, setSurvivalPoints] = useState(0);
-  const [connectionCheck, setConnectionCheck] = useState<"idle" | "checking" | "ok" | "fail">("idle");
+  const [connectionCheck, setConnectionCheck] = useState<"idle" | "checking" | "ok" | "fallback" | "fail">("idle");
   const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
   const [flags, setFlags] = useState<FeatureFlags>(() => loadFeatureFlags());
   const [debugOn, setDebugOn] = useState(false);
@@ -85,26 +85,39 @@ const ShelterHome: React.FC = () => {
     saveFeatureFlags(next);
   };
 
+  const CHECK_CONNECTION_TIMEOUT_MS = 10000;
   const checkConnection = async () => {
     setConnectionCheck("checking");
     setConnectionMessage(null);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), CHECK_CONNECTION_TIMEOUT_MS);
     try {
       const state = createInitialState();
       const res = await fetch(TURN_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ state, action: "INIT" }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
+      const turnMode = res.headers.get("X-Turn-Mode");
       if (res.ok) {
-        setConnectionCheck("ok");
-        setConnectionMessage("连接正常");
+        if (turnMode === "FALLBACK") {
+          setConnectionCheck("fallback");
+          setConnectionMessage("后端可达，但模型响应慢/失败，已降级");
+        } else {
+          setConnectionCheck("ok");
+          setConnectionMessage("连接正常");
+        }
       } else {
         setConnectionCheck("fail");
         setConnectionMessage("服务暂不可用");
       }
-    } catch {
+    } catch (err) {
+      clearTimeout(timeoutId);
+      const isAbort = err instanceof Error && err.name === "AbortError";
       setConnectionCheck("fail");
-      setConnectionMessage("通讯中断");
+      setConnectionMessage(isAbort ? "通讯超时" : "通讯中断");
     }
   };
 
@@ -257,6 +270,9 @@ const ShelterHome: React.FC = () => {
             </button>
             {connectionCheck === "ok" && connectionMessage && (
               <span className="text-[10px] text-green-500">{connectionMessage}</span>
+            )}
+            {connectionCheck === "fallback" && connectionMessage && (
+              <span className="text-[10px] text-amber-400" title="X-Turn-Mode: FALLBACK">{connectionMessage}</span>
             )}
             {connectionCheck === "fail" && connectionMessage && (
               <span className="text-[10px] text-red-400">{connectionMessage}</span>

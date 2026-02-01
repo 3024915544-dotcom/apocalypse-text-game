@@ -75,8 +75,8 @@ export interface TurnResponse {
   };
   memory_update: string;
   safety_fallback?: string;
-  /** 本回合生效的牌面类型（服务端注入） */
-  meta?: { cards?: string[] };
+  /** 本回合生效的牌面类型（服务端注入）；降级时带 isFallback / fail_reason / latency_ms */
+  meta?: { cards?: string[]; isFallback?: boolean; fail_reason?: string; latency_ms?: number };
 }
 
 export interface GameState {

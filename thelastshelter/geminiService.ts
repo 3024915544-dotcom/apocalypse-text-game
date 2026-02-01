@@ -6,7 +6,7 @@
 import { TurnResponse, GameState, ActionType, DirectionHint, RiskLevel } from "./types";
 import { TURN_ENDPOINT } from "./constants";
 
-/** 请求超时（毫秒） */
+/** 请求超时（毫秒）：必须大于服务端 8s，避免服务端刚返回 fallback 前端先 abort。前端 12s。 */
 const TURN_REQUEST_TIMEOUT_MS = 12000;
 
 /** 标准化错误：面向玩家的 message（中文），底层信息放 debug。 */
@@ -80,6 +80,9 @@ function normalizeTurnResponse(data: Record<string, unknown>): TurnResponse {
   const suggestion = (data.suggestion as Record<string, unknown>) || {};
   const meta = data.meta as Record<string, unknown> | undefined;
   const cards = Array.isArray(meta?.cards) ? (meta.cards as string[]) : undefined;
+  const isFallback = meta?.isFallback === true;
+  const fail_reason = typeof meta?.fail_reason === "string" ? meta.fail_reason : undefined;
+  const latency_ms = typeof meta?.latency_ms === "number" ? meta.latency_ms : undefined;
   return {
     scene_blocks: normalizeSceneBlocks(rawBlocks),
     choices: normalizeChoices(rawChoices),
@@ -100,19 +103,32 @@ function normalizeTurnResponse(data: Record<string, unknown>): TurnResponse {
     suggestion: { delta: (suggestion.delta as Record<string, unknown>) || {} },
     memory_update: typeof data.memory_update === "string" ? data.memory_update : "",
     safety_fallback: typeof data.safety_fallback === "string" ? data.safety_fallback : undefined,
-    meta: cards ? { cards } : undefined,
+    meta:
+      cards?.length || isFallback
+        ? { ...(cards?.length ? { cards } : {}), ...(isFallback && { isFallback: true, fail_reason, latency_ms }) }
+        : undefined,
   };
 }
 
 export type TurnRequestMeta = { runId: string; clientTurnIndex: number };
+
+/** 局内请求体瘦身：只发引擎需要的最小 state（不含长日志/历史），降低延迟。 */
+function buildSlimState(state: GameState): GameState {
+  return {
+    ...state,
+    logs: state.logs.slice(-1),
+    history: [],
+  };
+}
 
 export async function fetchTurnResponse(
   state: GameState,
   actionType: ActionType,
   meta?: TurnRequestMeta
 ): Promise<TurnResponse> {
+  const slimState = buildSlimState(state);
   const body: Record<string, unknown> = {
-    state,
+    state: slimState,
     action: typeof actionType === "string" ? actionType : String(actionType),
   };
   if (meta) {
@@ -135,7 +151,7 @@ export async function fetchTurnResponse(
     clearTimeout(timeoutId);
     const isAbort = err instanceof Error && err.name === "AbortError";
     if (isAbort) {
-      throw toTurnError("TIMEOUT", "通讯超时", { debug: String(err) });
+      throw toTurnError("TIMEOUT", "通讯超时（已保留本回合动作，可重试）", { debug: String(err) });
     }
     throw toTurnError("NETWORK", "通讯中断", { debug: err instanceof Error ? err.message : String(err) });
   }
@@ -160,7 +176,7 @@ export async function fetchTurnResponse(
     throw toTurnError("HTTP", "服务暂不可用", { debug });
   }
   let out = normalizeTurnResponse(data);
-  if (out.safety_fallback && out.scene_blocks.length > 0) {
+  if (out.safety_fallback && out.scene_blocks.length > 0 && !out.meta?.isFallback) {
     const reason = out.safety_fallback;
     out = {
       ...out,

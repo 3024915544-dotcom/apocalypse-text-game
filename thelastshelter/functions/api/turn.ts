@@ -22,10 +22,13 @@ type PagesFunction<E = unknown> = (ctx: {
 }) => Promise<Response> | Response;
 
 const DEEPSEEK_BASE = "https://api.deepseek.com/v1";
+const DEEPSEEK_TIMEOUT_MS = 8000;
 const MAX_TURNS = 16;
 const MILESTONES = [5, 10, 15];
 const CACHE_MAX_AGE_NORMAL = 3600;
 const CACHE_MAX_AGE_FALLBACK = 30;
+
+export type FailReason = "DEEPSEEK_TIMEOUT" | "DEEPSEEK_HTTP" | "DEEPSEEK_PARSE" | "INTERNAL";
 
 /** 槽位化 system prompt：短、硬、围绕决策与收益差量；输出 json。 */
 const SYSTEM_INSTRUCTION = `你是一个"末日生存文字冒险"的回合叙事与选项生成器。你输出的是 json（严格 JSON，符合下述 schema），不要任何非 JSON 的前后缀。
@@ -272,8 +275,8 @@ grid: 9x9
 player_pos: (${(state.player_pos as { x: number; y: number }).x}, ${(state.player_pos as { x: number; y: number }).y})
 fog_summary: unknown=${fogCount} seen=${81 - fogCount}
 
-【最近日志】
-${(state.logs as string[]).slice(-5).join("\n")}
+【最近局势】（仅 1 条，供模型参考）
+${(Array.isArray(state.logs) ? (state.logs as string[]).slice(-1)[0] : "") ?? ""}
 `.trim();
 }
 
@@ -295,19 +298,20 @@ interface GameState {
   history: string[];
 }
 
-function safetyFallbackResponse(state: GameState, reason: string): TurnResponse {
+/** 可玩的降级回合：短提示 + 2–3 个基础选项（移动/谨慎搜索/撤离若可用）。 */
+function safetyFallbackResponse(state: GameState, _reason: string, body: Record<string, unknown>): TurnResponse {
+  const evacAvailable = (isString(body.evacAvailable) ? body.evacAvailable : "none") as string;
+  const hasEvac = evacAvailable !== "none" && evacAvailable !== "";
+  const choices: Array<Record<string, unknown>> = [
+    { id: "fallback-move", label: "向安全方向移动", hint: "省电前进", risk: "LOW", preview_cost: {}, action_type: "MOVE_N" },
+    { id: "fallback-search", label: "谨慎搜索", hint: "耗电探查", risk: "MID", preview_cost: {}, action_type: "SEARCH" },
+  ];
+  if (hasEvac) {
+    choices.push({ id: "fallback-extract", label: "撤离-近", hint: "尽快脱离", risk: "LOW", preview_cost: {}, action_type: "SILENCE" });
+  }
   return {
-    scene_blocks: [{ type: "EVENT", content: "连接异常，请稍后再试。" }],
-    choices: [
-      {
-        id: "fallback-retry",
-        label: "尝试继续",
-        hint: "信号不稳定",
-        risk: "MID",
-        preview_cost: {},
-        action_type: "SILENCE",
-      },
-    ],
+    scene_blocks: [{ type: "EVENT", content: "通讯不稳，你凭经验摸索前进。" }],
+    choices,
     ui: {
       progress: { turn_index: state.turn_index, milestones_hit: [] },
       map_delta: { reveal_indices: [], direction_hint: "NONE" },
@@ -315,7 +319,7 @@ function safetyFallbackResponse(state: GameState, reason: string): TurnResponse 
     },
     suggestion: { delta: {} },
     memory_update: "",
-    safety_fallback: reason,
+    safety_fallback: _reason,
   };
 }
 
@@ -428,7 +432,7 @@ function patchChoicesForCards(res: TurnResponse, cards: PlayabilityCard[]): Turn
   };
 }
 
-async function callDeepSeek(apiKey: string, systemPrompt: string, userPrompt: string): Promise<string> {
+async function callDeepSeek(apiKey: string, systemPrompt: string, userPrompt: string, signal?: AbortSignal): Promise<string> {
   const res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
     method: "POST",
     headers: {
@@ -447,11 +451,11 @@ async function callDeepSeek(apiKey: string, systemPrompt: string, userPrompt: st
       presence_penalty: 0.2,
       frequency_penalty: 0.3,
     }),
+    signal,
   });
   if (!res.ok) {
     const err = (await res.text()).slice(0, 200);
     throw new Error(`DeepSeek ${res.status}: ${err}`);
-    
   }
   const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
   const content = json.choices?.[0]?.message?.content?.trim();
@@ -535,31 +539,56 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   };
   const cards = getPlayabilityCards(cardsInput, balanceProfile);
   const userPrompt = buildUserPrompt(state, actionType, body, cards);
-  const tryOnce = async (): Promise<{ ok: true; data: TurnResponse } | { ok: false; reason: string }> => {
+
+  function toFailReason(reason: string): FailReason {
+    if (reason === "DEEPSEEK_TIMEOUT") return "DEEPSEEK_TIMEOUT";
+    if (reason.startsWith("DeepSeek ") && /^\d+/.test(reason.slice(9).trim())) return "DEEPSEEK_HTTP";
+    if (reason === "parse fail" || reason.includes("empty content") || reason.includes("JSON")) return "DEEPSEEK_PARSE";
+    return "INTERNAL";
+  }
+
+  const tryOnce = async (signal: AbortSignal): Promise<{ ok: true; data: TurnResponse } | { ok: false; reason: string; failReason: FailReason }> => {
     try {
-      const raw = await callDeepSeek(apiKey, SYSTEM_INSTRUCTION, userPrompt);
+      const raw = await callDeepSeek(apiKey, SYSTEM_INSTRUCTION, userPrompt, signal);
       const parsed = JSON.parse(raw) as unknown;
       if (validateTurnResponse(parsed)) return { ok: true, data: parsed as TurnResponse };
-      return { ok: false, reason: "validate fail" };
+      return { ok: false, reason: "validate fail", failReason: "INTERNAL" };
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
-      if (err.startsWith("DeepSeek ")) return { ok: false, reason: err };
-      return { ok: false, reason: "parse fail" };
+      const isAbort = e instanceof Error && e.name === "AbortError";
+      if (isAbort) return { ok: false, reason: "DEEPSEEK_TIMEOUT", failReason: "DEEPSEEK_TIMEOUT" };
+      if (err.startsWith("DeepSeek ")) return { ok: false, reason: err, failReason: "DEEPSEEK_HTTP" };
+      if (err.includes("JSON") || err.includes("empty content")) return { ok: false, reason: "parse fail", failReason: "DEEPSEEK_PARSE" };
+      return { ok: false, reason: err, failReason: toFailReason(err) };
     }
   };
 
-  let attempt = await tryOnce();
-  if (!attempt.ok) attempt = await tryOnce();
+  const startMs = Date.now();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DEEPSEEK_TIMEOUT_MS);
+  let attempt: Awaited<ReturnType<typeof tryOnce>>;
+  try {
+    attempt = await tryOnce(controller.signal);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  const latencyMs = Date.now() - startMs;
+
   const result = attempt.ok
     ? attempt.data
-    : safetyFallbackResponse(state, (attempt as { ok: false; reason: string }).reason);
+    : safetyFallbackResponse(state, (attempt as { ok: false; reason: string }).reason, body);
   let normalized = normalizeForFrontend(result);
   if (cards.length > 0) normalized = patchChoicesForCards(normalized, cards);
+
+  const isFallback = !attempt.ok;
+  const failReason: FailReason | undefined = !attempt.ok ? (attempt as { ok: false; failReason: FailReason }).failReason : undefined;
   const payload = {
     ...normalized,
-    meta: { cards: cards.map((c) => c.type) },
+    meta: {
+      cards: cards.map((c) => c.type),
+      ...(isFallback && { isFallback: true, fail_reason: failReason ?? "INTERNAL", latency_ms: latencyMs }),
+    },
   };
-  const isFallback = !attempt.ok;
   const maxAge = isFallback ? CACHE_MAX_AGE_FALLBACK : CACHE_MAX_AGE_NORMAL;
 
   const response = new Response(JSON.stringify(payload), {
@@ -569,6 +598,9 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       "Access-Control-Allow-Origin": "*",
       "X-Turn-Cache": "MISS",
       "X-Turn-Key": turnKey.slice(0, 12),
+      "X-Turn-Mode": isFallback ? "FALLBACK" : "OK",
+      "X-Fail-Reason": isFallback ? (failReason ?? "INTERNAL") : "",
+      "X-Latency-MS": String(latencyMs),
       "X-Balance-Profile": balanceProfile,
       "X-Cards": cards.map((c) => c.type).join(",") || "-",
       "Cache-Control": `public, max-age=${maxAge}`,

@@ -119,6 +119,7 @@ function RunScreen() {
   const batteryHintShownRef = useRef(loadHintsSeen().BAT_LOW === true);
   const extractHintShownRef = useRef(loadHintsSeen().EXTRACT_CHOICES === true);
   const extractPressureCardUsedRef = useRef(false);
+  const [consecutiveInitFailures, setConsecutiveInitFailures] = useState(0);
   const [contractsPanelOpen, setContractsPanelOpen] = useState(false);
 
   useEffect(() => {
@@ -390,6 +391,7 @@ function RunScreen() {
         }
       }
       setLastFailedTurn(null);
+      if (action === 'INIT') setConsecutiveInitFailures(0);
       try {
         sessionStorage.removeItem('m_apoc_init_failed_v1');
       } catch {
@@ -566,6 +568,7 @@ function RunScreen() {
         });
       }
       if (action === 'INIT') {
+        setConsecutiveInitFailures(prev => prev + 1);
         try {
           sessionStorage.setItem('m_apoc_init_failed_v1', '1');
         } catch {
@@ -575,6 +578,19 @@ function RunScreen() {
     } finally {
       setTurnInFlight(false);
     }
+  };
+
+  /** 局内重新连接：清 init_failed 并重试 INIT，不要求退避难所。 */
+  const reconnectAndInit = () => {
+    try {
+      sessionStorage.removeItem('m_apoc_init_failed_v1');
+    } catch {
+      /* ignore */
+    }
+    if (lastFailedTurn?.action === 'INIT') setLastFailedTurn(null);
+    setTurnError(null);
+    setTurnErrorDismissed(false);
+    submitTurn('INIT');
   };
 
   /** 用上次失败时的 envelope 重发；走单飞锁，成功清 envelope 并应用，失败不写档。 */
@@ -628,6 +644,7 @@ function RunScreen() {
         }
       }
       setLastFailedTurn(null);
+      if (action === 'INIT') setConsecutiveInitFailures(0);
       try {
         sessionStorage.removeItem('m_apoc_init_failed_v1');
       } catch {
@@ -1288,7 +1305,7 @@ function RunScreen() {
                 <span className="px-1.5 py-0.5 text-[9px] font-bold text-red-500 border border-red-700 bg-black/60">黑暗模式</span>
               )}
               {featureFlags.fallbackBadgeEnabled && lastResponse && detectFallback(lastResponse) && (
-                <span className="text-amber-500/90 italic" title="记录简化">通讯不稳</span>
+                <span className="text-amber-500/90 italic" title="记录简化">已启用保护模式</span>
               )}
             </div>
             <div className="flex items-center gap-1.5">
@@ -1377,7 +1394,7 @@ function RunScreen() {
                 <div className="min-w-0 flex-1">
                   <p className="text-red-200 text-sm font-medium">
                     {turnError.type === 'NETWORK' && '通讯中断'}
-                    {turnError.type === 'TIMEOUT' && '通讯超时'}
+                    {turnError.type === 'TIMEOUT' && (turnError.message || '通讯超时')}
                     {turnError.type === 'HTTP' && '服务暂不可用'}
                     {turnError.type === 'PARSE' && '记录异常，已启用保护'}
                     {turnError.type === 'UNKNOWN' && (turnError.message || '请求异常')}
@@ -1389,7 +1406,20 @@ function RunScreen() {
                         ? '服务端暂时异常，已保护当前进度。'
                         : '请重试或返回避难所后重新进入。'}
                   </p>
-                  <div className="flex gap-2 mt-2">
+                  {consecutiveInitFailures >= 2 && (
+                    <p className="text-amber-200/90 text-xs mt-1">建议返回避难所检查连接后重试；也可继续点「重新连接」。</p>
+                  )}
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {(lastFailedTurn?.action === 'INIT' || !lastResponse) && (
+                      <button
+                        type="button"
+                        disabled={turnInFlight}
+                        className="px-2.5 py-1.5 text-xs border border-amber-500/50 text-amber-200 hover:bg-amber-900/40 transition disabled:opacity-50 disabled:cursor-not-allowed rounded"
+                        onClick={reconnectAndInit}
+                      >
+                        重新连接
+                      </button>
+                    )}
                     <button
                       type="button"
                       disabled={!lastFailedTurn || turnInFlight}
