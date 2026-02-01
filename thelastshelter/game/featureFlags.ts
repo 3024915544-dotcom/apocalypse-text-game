@@ -13,6 +13,7 @@ export interface FeatureFlags {
   fallbackBadgeEnabled: boolean;
   shelterHealthCheckEnabled: boolean;
   tutorialHintsEnabled: boolean;
+  mapPanelEnabled: boolean;
 }
 
 export const DEFAULT_FLAGS: FeatureFlags = {
@@ -22,6 +23,7 @@ export const DEFAULT_FLAGS: FeatureFlags = {
   fallbackBadgeEnabled: true,
   shelterHealthCheckEnabled: true,
   tutorialHintsEnabled: true,
+  mapPanelEnabled: false,
 };
 
 function mergeWithDefaults(partial: Partial<FeatureFlags> | null): FeatureFlags {
@@ -33,6 +35,7 @@ function mergeWithDefaults(partial: Partial<FeatureFlags> | null): FeatureFlags 
     fallbackBadgeEnabled: typeof partial.fallbackBadgeEnabled === "boolean" ? partial.fallbackBadgeEnabled : DEFAULT_FLAGS.fallbackBadgeEnabled,
     shelterHealthCheckEnabled: typeof partial.shelterHealthCheckEnabled === "boolean" ? partial.shelterHealthCheckEnabled : DEFAULT_FLAGS.shelterHealthCheckEnabled,
     tutorialHintsEnabled: typeof partial.tutorialHintsEnabled === "boolean" ? partial.tutorialHintsEnabled : DEFAULT_FLAGS.tutorialHintsEnabled,
+    mapPanelEnabled: typeof partial.mapPanelEnabled === "boolean" ? partial.mapPanelEnabled : DEFAULT_FLAGS.mapPanelEnabled,
   };
 }
 
