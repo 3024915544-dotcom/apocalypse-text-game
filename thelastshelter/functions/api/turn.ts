@@ -30,17 +30,31 @@ const CACHE_MAX_AGE_FALLBACK = 30;
 
 export type FailReason = "DEEPSEEK_TIMEOUT" | "DEEPSEEK_HTTP" | "DEEPSEEK_PARSE" | "INTERNAL";
 
-/** 槽位化 system prompt：短、硬、围绕决策与收益差量；输出 json。 */
-const SYSTEM_INSTRUCTION = `你是一个"末日生存文字冒险"的回合叙事与选项生成器。你输出的是 json（严格 JSON，符合下述 schema），不要任何非 JSON 的前后缀。
+const DEFAULT_PROMPT_PROFILE = "fast";
+
+/** FAST 硬规约：主屏 1 段 ≤28字，可选补充 ≤20字，最多 3 选项、每 label ≤10 字；输出 json，突出决策与收益。 */
+const FAST_SYSTEM_INSTRUCTION = `你是末日生存文字冒险的回合生成器。输出必须是合法 json，不要任何非 json 前后缀。
+
+最小 json 骨架：
+{"scene_blocks":[{"type":"EVENT","content":""}],"choices":[{"id":"","label":"","hint":"","risk":"LOW","preview_cost":{},"action_type":""}],"ui":{"progress":{"turn_index":0,"milestones_hit":[]},"map_delta":{"reveal_indices":[],"direction_hint":"NONE"},"bag_delta":{"add":[],"remove":[]}},"suggestion":{"delta":{}},"memory_update":""}
+
+FAST 硬规约（短槽位，必须遵守）：
+1) scene_blocks[0].content：一段，≤28 字，只写「局势+结果倾向」。必须点明本回合关键矛盾（电量/背包/撤离/黑暗之一）。不写长篇、不写世界观、不写对话。
+2) scene_blocks[1]（可选）：仅当以下任一成立时出现，且 ≤20 字：黑暗模式、撤离窗口出现、稀有机会/孤注一掷/条件撤离（牌面）。否则只输出 1 条 scene_blocks。
+3) choices：最多 3 条；每条 label ≤10 个汉字；策略差异明显（省电/搜索/撤离/赌/保命）；不得同义重复。
+4) direction_hint 为 NONE/N/NE/E/SE/S/SW/W/NW 之一；risk 为 LOW/MID/HIGH。
+5) 规则与数值由引擎决定，你只包装短文案。`;
+
+/** 兼容旧版：较长槽位。 */
+const SYSTEM_INSTRUCTION_LEGACY = `你是一个"末日生存文字冒险"的回合叙事与选项生成器。你输出的是 json（严格 JSON，符合下述 schema），不要任何非 JSON 的前后缀。
 
 极简 JSON 骨架示例：
 {"scene_blocks":[{"type":"EVENT","content":"短句"}],"choices":[{"id":"","label":"","hint":"","risk":"LOW","preview_cost":{},"action_type":""}],"ui":{"progress":{"turn_index":0,"milestones_hit":[]},"map_delta":{"reveal_indices":[],"direction_hint":"NONE"},"bag_delta":{"add":[],"remove":[]}},"suggestion":{"delta":{}},"memory_update":""}
 
 硬性规约：
-1) scene_blocks[0].content：最多 2 段，每段 ≤40 字；只写"局势+结果倾向"，不要长铺陈。若处于黑暗模式/撤离窗口/背包满压，必须在第一段用一句话点明（不讲概率、不讲精确数值）。
-2) choices：每条 label ≤10 个汉字；不得同义重复，必须体现不同策略（省电/搜索/撤离/赌/保命）；不出现英文缩写（HP、电量等用中文）。
-3) 叙事必须服务闭环：探索迷雾→背包取舍→电量压力→撤离抉择→结算带出。规则与数值由引擎决定，你只负责包装。
-4) direction_hint 必须为 NONE/N/NE/E/SE/S/SW/W/NW 之一；risk 为 LOW/MID/HIGH。
+1) scene_blocks[0].content：最多 2 段，每段 ≤40 字；只写"局势+结果倾向"。
+2) choices：每条 label ≤10 个汉字；不得同义重复，必须体现不同策略（省电/搜索/撤离/赌/保命）。
+3) direction_hint 必须为 NONE/N/NE/E/SE/S/SW/W/NW 之一；risk 为 LOW/MID/HIGH。
 
 TurnResponse schema（严格遵循，输出合法 JSON）：
 {
@@ -53,6 +67,16 @@ TurnResponse schema（严格遵循，输出合法 JSON）：
 
 interface Env {
   DEEPSEEK_API_KEY: string;
+  TURN_PROMPT_PROFILE?: string;
+}
+
+function getPromptProfile(env: Env): string {
+  const v = (env as unknown as Record<string, unknown>).TURN_PROMPT_PROFILE;
+  return typeof v === "string" && v.trim() ? v.trim().toLowerCase() : DEFAULT_PROMPT_PROFILE;
+}
+
+function getSystemInstruction(profile: string): string {
+  return profile === "fast" ? FAST_SYSTEM_INSTRUCTION : SYSTEM_INSTRUCTION_LEGACY;
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -236,9 +260,9 @@ function buildUserPrompt(
   state: GameState,
   actionType: string,
   body: Record<string, unknown>,
-  cards: PlayabilityCard[]
+  cards: PlayabilityCard[],
+  profile: string
 ): string {
-  const fogCount = (state.fog as boolean[]).filter((f) => !f).length;
   const signals = buildExperienceSignals(state, body);
   const signalsJson = JSON.stringify(signals, null, 0);
   const cardsJson = JSON.stringify(cards, null, 0);
@@ -246,13 +270,24 @@ function buildUserPrompt(
     ? `
 【本回合牌面 cards】（你必须原样使用，不得新增或删除）
 ${cardsJson}
-规则：如果 cards 中包含某 type，必须在 choices 中呈现对应选项（或 scene_blocks 中点明）；不得新增 cards 之外的特殊机会；不得删除 cards 指定的机会。普通选项照常包装，不得重复。
-- GAMBLE：必须带 badge=孤注一掷，label≤10字。
-- RARE_LOOT：必须带 badge=稀有机会（每局最多出现一次该 badge）。
-- CONDITIONAL_EXTRACT：label=《条件撤离》，badge=条件撤离，hint 中点明消耗保险丝。
-- EXTRACT_PRESSURE：scene_blocks[0] 或轻提示必须点明「撤离窗口出现、越拖越贵」。
+规则：cards 中某 type 必须在 choices 中呈现对应选项或 scene_blocks 中点明。GAMBLE=孤注一掷；RARE_LOOT=稀有机会；CONDITIONAL_EXTRACT=《条件撤离》消耗保险丝；EXTRACT_PRESSURE=点明撤离窗口越拖越贵。
 `
     : "";
+
+  if (profile === "fast") {
+    const lastSummary =
+      (typeof body.lastSummary === "string" && (body.lastSummary as string).trim().length <= 20
+        ? (body.lastSummary as string).trim()
+        : "") || "";
+    return `【experience_signals】
+${signalsJson}
+${cardsConstraint}
+turn_index: ${state.turn_index} / ${MAX_TURNS}
+action.type: ${actionType}
+${lastSummary ? `last_result: ${lastSummary}` : ""}`.trim();
+  }
+
+  const fogCount = (state.fog as boolean[]).filter((f) => !f).length;
   return `
 下面给出本回合处境信号（json），你必须基于这些信号写短促回合叙事与选项包装；规则与数值由引擎决定，你不要发明新规则。
 
@@ -351,6 +386,62 @@ function truncateLabel(s: string, max: number): string {
   return t.slice(0, max);
 }
 
+const FAST_SCENE_BLOCK0_MAX = 28;
+const FAST_SCENE_BLOCK1_MAX = 20;
+const FAST_CHOICES_MAX = 3;
+const FAST_LABEL_MAX = 10;
+
+/** 按句号/逗号尽量不截断词地截断到 max 字。 */
+function truncateContentTo(s: string, max: number): string {
+  if (typeof s !== "string") return "";
+  const t = s.trim();
+  if (t.length <= max) return t;
+  const head = t.slice(0, max);
+  const lastComma = head.lastIndexOf("，");
+  const lastPeriod = head.lastIndexOf("。");
+  const cut = Math.max(lastComma, lastPeriod);
+  if (cut > max * 0.5) return head.slice(0, cut + 1);
+  return head;
+}
+
+/** FAST 输出长度收口：scene_blocks 最多 2 条、首条 ≤28 字；choices 最多 3、label ≤10。 */
+function applyFastLengthGuard(data: TurnResponse, cards: PlayabilityCard[]): TurnResponse {
+  let scene_blocks = data.scene_blocks.slice(0, 2);
+  if (scene_blocks.length > 0) {
+    const b0 = scene_blocks[0] as Record<string, unknown>;
+    const c0 = (isString(b0.content) ? b0.content : isString(b0.text) ? b0.text : "") as string;
+    const firstTrunc = truncateContentTo(c0, FAST_SCENE_BLOCK0_MAX);
+    const firstBlock: TurnResponse["scene_blocks"][0] = { ...scene_blocks[0], content: firstTrunc };
+    const rest = scene_blocks.slice(1).map((b) => {
+      const rec = b as Record<string, unknown>;
+      const c = (isString(rec.content) ? rec.content : isString(rec.text) ? rec.text : "") as string;
+      return { ...b, content: truncateContentTo(c, FAST_SCENE_BLOCK1_MAX) } as TurnResponse["scene_blocks"][0];
+    });
+    scene_blocks = [firstBlock, ...rest];
+  }
+  let choices = data.choices.slice(0, FAST_CHOICES_MAX);
+  const evacOrCard = (c: Record<string, unknown>) => {
+    const label = (c.label as string) ?? "";
+    return (
+      label.includes("撤离") ||
+      label.includes("条件") ||
+      (c.server_badge as string)?.length > 0 ||
+      (c.badge as string)?.length > 0
+    );
+  };
+  if (choices.length > FAST_CHOICES_MAX) {
+    const priority = choices.filter((c) => evacOrCard(c as Record<string, unknown>));
+    const rest = choices.filter((c) => !evacOrCard(c as Record<string, unknown>));
+    choices = [...priority, ...rest].slice(0, FAST_CHOICES_MAX);
+  }
+  choices = choices.map((c) => {
+    const rec = c as Record<string, unknown>;
+    const label = truncateLabel((rec.label as string) ?? "", FAST_LABEL_MAX);
+    return { ...rec, label };
+  }) as TurnResponse["choices"];
+  return { ...data, scene_blocks, choices };
+}
+
 /** 牌面落地：补缺 choice、修正 badge、截断 label、移除非牌面 badge。 */
 function patchChoicesForCards(res: TurnResponse, cards: PlayabilityCard[]): TurnResponse {
   const cardByType = new Map(cards.map((c) => [c.type, c]));
@@ -432,7 +523,16 @@ function patchChoicesForCards(res: TurnResponse, cards: PlayabilityCard[]): Turn
   };
 }
 
-async function callDeepSeek(apiKey: string, systemPrompt: string, userPrompt: string, signal?: AbortSignal): Promise<string> {
+const FAST_MAX_TOKENS = 700;
+const LEGACY_MAX_TOKENS = 1600;
+
+async function callDeepSeek(
+  apiKey: string,
+  systemPrompt: string,
+  userPrompt: string,
+  opts: { signal?: AbortSignal; max_tokens?: number }
+): Promise<string> {
+  const { signal, max_tokens = LEGACY_MAX_TOKENS } = opts;
   const res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
     method: "POST",
     headers: {
@@ -446,7 +546,7 @@ async function callDeepSeek(apiKey: string, systemPrompt: string, userPrompt: st
         { role: "user", content: userPrompt },
       ],
       response_format: { type: "json_object" },
-      max_tokens: 1600,
+      max_tokens,
       temperature: 0.7,
       presence_penalty: 0.2,
       frequency_penalty: 0.3,
@@ -492,12 +592,21 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   }
 
   const runId = (isString(body.runId) ? body.runId : (state as unknown as Record<string, unknown>).runId) as string | undefined;
-  const clientTurnIndex = typeof body.clientTurnIndex === "number" ? body.clientTurnIndex : state.turn_index;
+  const metaIn = body.meta as Record<string, unknown> | undefined;
+  const clientTurnIndex =
+    typeof body.clientTurnIndex === "number"
+      ? body.clientTurnIndex
+      : typeof metaIn?.clientTurnIndex === "number"
+        ? metaIn.clientTurnIndex
+        : typeof state.turn_index === "number"
+          ? state.turn_index
+          : 0;
   const slice = buildStableStateSlice(state, body);
   const balanceProfile: BalanceProfile = parseBalanceProfile(
     request.headers.get("X-Balance-Profile"),
     new URL(request.url || "", "http://localhost").searchParams.get("balance")
   );
+  const promptProfile = getPromptProfile(env as Env);
   const turnKey = runId
     ? await computeTurnKey(runId, clientTurnIndex, actionType, slice)
     : "";
@@ -509,17 +618,41 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       ? new Request(new URL(`/api/turn?turnKey=${turnKey}`, request.url).href, { method: "GET" })
       : null;
 
+  const serverTurnIndex = clientTurnIndex + 1;
+  function enforceServerTurnIndex(payload: Record<string, unknown>): void {
+    if (!isObject(payload.ui)) payload.ui = {};
+    const ui = payload.ui as Record<string, unknown>;
+    if (!isObject(ui.progress)) ui.progress = { turn_index: 0, milestones_hit: [] };
+    (ui.progress as Record<string, unknown>).turn_index = serverTurnIndex;
+    payload.meta = {
+      ...(isObject(payload.meta) ? (payload.meta as Record<string, unknown>) : {}),
+      runId: runId ?? "",
+      clientTurnIndex,
+      serverTurnIndex,
+    };
+  }
+
   if (cacheAvailable && cacheRequest && cacheStorage) {
     const cached = await cacheStorage.default!.match(cacheRequest);
     if (cached) {
-      const res = new Response(cached.body, {
-        status: cached.status,
-        statusText: cached.statusText,
-        headers: new Headers(cached.headers),
+      let cachedPayload: Record<string, unknown>;
+      try {
+        cachedPayload = (await cached.json()) as Record<string, unknown>;
+      } catch {
+        cachedPayload = {};
+      }
+      enforceServerTurnIndex(cachedPayload);
+      const res = new Response(JSON.stringify(cachedPayload), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+          "X-Turn-Cache": "HIT",
+          "X-Turn-Key": turnKey.slice(0, 12),
+          "X-Prompt-Profile": promptProfile,
+          "X-Balance-Profile": balanceProfile,
+        },
       });
-      res.headers.set("X-Turn-Cache", "HIT");
-      res.headers.set("X-Turn-Key", turnKey.slice(0, 12));
-      res.headers.set("X-Balance-Profile", balanceProfile);
       return res;
     }
   }
@@ -538,7 +671,9 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     cards_used,
   };
   const cards = getPlayabilityCards(cardsInput, balanceProfile);
-  const userPrompt = buildUserPrompt(state, actionType, body, cards);
+  const systemInstruction = getSystemInstruction(promptProfile);
+  const userPrompt = buildUserPrompt(state, actionType, body, cards, promptProfile);
+  const maxTokens = promptProfile === "fast" ? FAST_MAX_TOKENS : LEGACY_MAX_TOKENS;
 
   function toFailReason(reason: string): FailReason {
     if (reason === "DEEPSEEK_TIMEOUT") return "DEEPSEEK_TIMEOUT";
@@ -549,10 +684,12 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
   const tryOnce = async (signal: AbortSignal): Promise<{ ok: true; data: TurnResponse } | { ok: false; reason: string; failReason: FailReason }> => {
     try {
-      const raw = await callDeepSeek(apiKey, SYSTEM_INSTRUCTION, userPrompt, signal);
+      const raw = await callDeepSeek(apiKey, systemInstruction, userPrompt, { signal, max_tokens: maxTokens });
       const parsed = JSON.parse(raw) as unknown;
-      if (validateTurnResponse(parsed)) return { ok: true, data: parsed as TurnResponse };
-      return { ok: false, reason: "validate fail", failReason: "INTERNAL" };
+      if (!validateTurnResponse(parsed)) return { ok: false, reason: "validate fail", failReason: "INTERNAL" };
+      let data = parsed as TurnResponse;
+      if (promptProfile === "fast") data = applyFastLengthGuard(data, cards);
+      return { ok: true, data };
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
       const isAbort = e instanceof Error && e.name === "AbortError";
@@ -582,13 +719,14 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
   const isFallback = !attempt.ok;
   const failReason: FailReason | undefined = !attempt.ok ? (attempt as { ok: false; failReason: FailReason }).failReason : undefined;
-  const payload = {
+  const payload: Record<string, unknown> = {
     ...normalized,
     meta: {
       cards: cards.map((c) => c.type),
       ...(isFallback && { isFallback: true, fail_reason: failReason ?? "INTERNAL", latency_ms: latencyMs }),
     },
   };
+  enforceServerTurnIndex(payload);
   const maxAge = isFallback ? CACHE_MAX_AGE_FALLBACK : CACHE_MAX_AGE_NORMAL;
 
   const response = new Response(JSON.stringify(payload), {
@@ -601,6 +739,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       "X-Turn-Mode": isFallback ? "FALLBACK" : "OK",
       "X-Fail-Reason": isFallback ? (failReason ?? "INTERNAL") : "",
       "X-Latency-MS": String(latencyMs),
+      "X-Prompt-Profile": promptProfile,
       "X-Balance-Profile": balanceProfile,
       "X-Cards": cards.map((c) => c.type).join(",") || "-",
       "Cache-Control": `public, max-age=${maxAge}`,

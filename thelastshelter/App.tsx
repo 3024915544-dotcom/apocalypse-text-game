@@ -367,10 +367,17 @@ function RunScreen() {
     try {
       const response = await fetchTurnResponse(stateWithCards, action, meta);
       const respTurnIndex = response.ui?.progress?.turn_index;
+      const expectedNext = clientTurnIndex + 1;
       if (respTurnIndex != null) {
-        const expectedNext = clientTurnIndex + 1;
+        if (respTurnIndex === clientTurnIndex) {
+          setLastFailedTurn(null);
+          setLastResponse(response);
+          setTurnInFlight(false);
+          return;
+        }
         if (respTurnIndex !== expectedNext) {
-          setTurnError({ type: 'UNKNOWN', message: '进度同步异常，已取消本次推进，请重试' });
+          const devHint = import.meta.env.DEV ? ` 期望: ${expectedNext}，返回: ${respTurnIndex}` : '';
+          setTurnError({ type: 'UNKNOWN', message: '进度同步异常，已取消本次推进，请重试' + devHint });
           logTurnTrace({
             ts: Date.now(),
             runId,
@@ -618,10 +625,17 @@ function RunScreen() {
     try {
       const response = await fetchTurnResponse(stateWithCards, action, meta);
       const respTurnIndex = response.ui?.progress?.turn_index;
+      const expectedNextRetry = clientTurnIndex + 1;
       if (respTurnIndex != null) {
-        const expectedNext = clientTurnIndex + 1;
-        if (respTurnIndex !== expectedNext) {
-          setTurnError({ type: 'UNKNOWN', message: '进度同步异常，已取消本次推进，请重试' });
+        if (respTurnIndex === clientTurnIndex) {
+          setLastFailedTurn(null);
+          setLastResponse(response);
+          setTurnInFlight(false);
+          return;
+        }
+        if (respTurnIndex !== expectedNextRetry) {
+          const devHintRetry = import.meta.env.DEV ? ` 期望: ${expectedNextRetry}，返回: ${respTurnIndex}` : '';
+          setTurnError({ type: 'UNKNOWN', message: '进度同步异常，已取消本次推进，请重试' + devHintRetry });
           if (loadFeatureFlags().turnTraceEnabled) {
             logTurnTrace({
               ts: Date.now(),
