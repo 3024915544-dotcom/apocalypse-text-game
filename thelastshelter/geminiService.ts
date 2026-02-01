@@ -80,65 +80,49 @@ function normalizeTurnResponse(data: Record<string, unknown>): TurnResponse {
   };
 }
 
+export type TurnRequestMeta = { runId: string; clientTurnIndex: number };
+
 export async function fetchTurnResponse(
   state: GameState,
-  actionType: ActionType
+  actionType: ActionType,
+  meta?: TurnRequestMeta
 ): Promise<TurnResponse> {
+  const body: Record<string, unknown> = {
+    state,
+    action: typeof actionType === "string" ? actionType : String(actionType),
+  };
+  if (meta) {
+    body.runId = meta.runId;
+    body.clientTurnIndex = meta.clientTurnIndex;
+  }
+  const res = await fetch("/api/turn", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const rawText = await res.text();
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: ${rawText.slice(0, 200)}`);
+  }
+  let data: Record<string, unknown>;
   try {
-    const res = await fetch("/api/turn", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ state, action: typeof actionType === "string" ? actionType : String(actionType) }),
-    });
-    const rawText = await res.text();
-    if (!res.ok) {
-      throw new Error(`API ${res.status}: ${rawText.slice(0, 200)}`);
-    }
-    let data: Record<string, unknown>;
-    try {
-      data = JSON.parse(rawText) as Record<string, unknown>;
-    } catch {
-      throw new Error(`JSON 解析失败: ${rawText.slice(0, 200)}`);
-    }
-    if (data.error != null || data.detail != null) {
-      const msg = typeof data.detail === "string" ? data.detail : typeof data.error === "string" ? data.error : "backend error";
-      throw new Error(msg);
-    }
-    let out = normalizeTurnResponse(data);
-    if (out.safety_fallback && out.scene_blocks.length > 0) {
-      const reason = out.safety_fallback;
-      out = {
-        ...out,
-        scene_blocks: out.scene_blocks.map((b, i) =>
-          i === 0 ? { ...b, content: `连接异常：${reason}`, text: `连接异常：${reason}` } : b
-        ),
-      };
-    }
-    return out;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error("Turn API Error:", error);
-    const fallbackReason = message || "未知错误";
-    return {
-      scene_blocks: [{ type: "EVENT", content: `连接异常：${fallbackReason}`, text: `连接异常：${fallbackReason}` }],
-      choices: [
-        {
-          id: "fallback-retry",
-          label: "尝试继续",
-          hint: "信号不稳定",
-          risk: RiskLevel.MID,
-          preview_cost: { ...DEFAULT_PREVIEW_COST },
-          action_type: "SILENCE",
-        },
-      ],
-      ui: {
-        progress: { turn_index: state.turn_index, milestones_hit: [] },
-        map_delta: { reveal_indices: [], direction_hint: DirectionHint.NONE },
-        bag_delta: { add: [], remove: [] },
-      },
-      suggestion: { delta: {} },
-      memory_update: "",
-      safety_fallback: fallbackReason,
+    data = JSON.parse(rawText) as Record<string, unknown>;
+  } catch {
+    throw new Error(`JSON 解析失败: ${rawText.slice(0, 200)}`);
+  }
+  if (data.error != null || data.detail != null) {
+    const msg = typeof data.detail === "string" ? data.detail : typeof data.error === "string" ? data.error : "backend error";
+    throw new Error(msg);
+  }
+  let out = normalizeTurnResponse(data);
+  if (out.safety_fallback && out.scene_blocks.length > 0) {
+    const reason = out.safety_fallback;
+    out = {
+      ...out,
+      scene_blocks: out.scene_blocks.map((b, i) =>
+        i === 0 ? { ...b, content: `连接异常：${reason}`, text: `连接异常：${reason}` } : b
+      ),
     };
   }
+  return out;
 }

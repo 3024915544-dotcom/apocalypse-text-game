@@ -1,33 +1,46 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { GameState, TurnResponse, ActionType, RiskLevel, DirectionHint, BagItem } from './types';
+import { GameState, TurnResponse, ActionType, RiskLevel, DirectionHint, BagItem, SceneBlock } from './types';
 import { createInitialState, applyAction, applyBagDelta, getEmptyBagSlots } from './engine';
-import { fetchTurnResponse } from './geminiService';
+import { fetchTurnResponse, type TurnRequestMeta } from './geminiService';
 import { GRID_SIZE, MAX_TURNS, MILESTONES, BAG_CAPACITY, BATTERY_MAX } from './constants';
-import { getSurvivalPoints, addSurvivalPoints, computeRunPoints } from './game/economy';
-import { getRunConfig } from './game/runConfig';
+import { getSurvivalPoints, addSurvivalPoints, computeRunPoints, getCurrentRunId, setCurrentRunId, isRunSettled, markRunSettled } from './game/economy';
+import { getRunConfig, setRunConfig } from './game/runConfig';
 import { pickKeptItem, setStoredKeptItem } from './game/insurance';
 import ShelterHome from './ShelterHome';
 
-type LogTurn = {
+type LogbookEntry = {
   id: string;
-  turn_index: number;
-  action: string;
-  scene_blocks: TurnResponse['scene_blocks'];
-  at: number;
+  turn: number;
+  action: ActionType;
+  timestamp: number;
+  scene_blocks: SceneBlock[];
+  battery?: number;
+  hp?: number;
+  exposure?: number;
+  status: GameState['status'];
 };
 
 function actionLabel(action: ActionType): string {
   if (action === 'INIT') return '开始';
-  if (action === 'MOVE_N' || action === 'MOVE_E' || action === 'MOVE_S' || action === 'MOVE_W') return '移动';
+  if (action === 'MOVE_N') return '向北';
+  if (action === 'MOVE_S') return '向南';
+  if (action === 'MOVE_E') return '向东';
+  if (action === 'MOVE_W') return '向西';
   if (action === 'SEARCH') return '搜索';
   return String(action);
 }
 
 /** 局内界面：现有局内 UI/逻辑原封不动。 */
 function RunScreen() {
-  const [gameState, setGameState] = useState<GameState>(createInitialState());
+  const [gameState, setGameState] = useState<GameState>(() => {
+    const state = createInitialState();
+    const persistedRunId = getCurrentRunId();
+    if (persistedRunId) state.runId = persistedRunId;
+    return state;
+  });
   const [lastResponse, setLastResponse] = useState<TurnResponse | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [turnInFlight, setTurnInFlight] = useState(false);
+  const [turnError, setTurnError] = useState<string | null>(null);
   const [settlementRunPoints, setSettlementRunPoints] = useState<number | null>(null);
   const [lastActionType, setLastActionType] = useState<ActionType | null>(null);
   const [pendingAdds, setPendingAdds] = useState<BagItem[]>([]);
@@ -35,15 +48,21 @@ function RunScreen() {
   const [pendingAddItem, setPendingAddItem] = useState<BagItem | null>(null);
   const [replaceSlotMode, setReplaceSlotMode] = useState(false);
   const [insuranceKeptName, setInsuranceKeptName] = useState<string | null>(null);
-  const [logbook, setLogbook] = useState<LogTurn[]>([]);
+  const [insuranceSettlementMessage, setInsuranceSettlementMessage] = useState<string | null>(null);
+  const [logbook, setLogbook] = useState<LogbookEntry[]>([]);
   const [isLogbookOpen, setIsLogbookOpen] = useState(false);
   const [logbookOpenSet, setLogbookOpenSet] = useState<Record<number, boolean>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasCreditedRef = useRef(false);
   const devPickupCounterRef = useRef(0);
+  const [settlementButtonsDisabled, setSettlementButtonsDisabled] = useState(false);
 
   useEffect(() => {
-    handleTurn('INIT');
+    setCurrentRunId(gameState.runId);
+  }, [gameState.runId]);
+
+  useEffect(() => {
+    submitTurn('INIT');
   }, []);
 
   useEffect(() => {
@@ -52,30 +71,50 @@ function RunScreen() {
     }
   }, [lastResponse]);
 
-  // 结算入账：仅在本局首次变为非 PLAYING 时执行一次；死亡且保险时按保住的一件计分
+  // 结算入账：仅在本局首次变为非 PLAYING 时执行一次；死亡且保险时保留 1 格并计分；幂等防重复入账
   useEffect(() => {
     if (gameState.status === 'PLAYING') return;
     if (hasCreditedRef.current) return;
+    if (isRunSettled(gameState.runId)) {
+      hasCreditedRef.current = true;
+      const points = computeRunPoints(gameState);
+      setSettlementRunPoints(points);
+      return;
+    }
     hasCreditedRef.current = true;
     const runConfig = getRunConfig();
     let points: number;
-    if (gameState.status === 'LOSS' && runConfig.insurancePurchased === true) {
-      const keptItem = pickKeptItem(gameState.bag);
-      if (keptItem) {
-        setStoredKeptItem(keptItem);
-        setInsuranceKeptName(keptItem.name);
-        points = computeRunPoints(gameState, keptItem);
+    if (gameState.status === 'LOSS') {
+      if (runConfig.insurancePurchased === true && runConfig.insuranceUsed !== true) {
+        const keptItem = pickKeptItem(gameState.bag);
+        setGameState(prev => ({ ...prev, bag: keptItem ? [keptItem] : [] }));
+        setRunConfig({ insuranceUsed: true });
+        if (keptItem) {
+          setStoredKeptItem(keptItem);
+          setInsuranceKeptName(keptItem.name);
+          setInsuranceSettlementMessage('保险袋保住：' + keptItem.name);
+          points = computeRunPoints(gameState, keptItem);
+        } else {
+          setInsuranceKeptName(null);
+          setInsuranceSettlementMessage('你什么也没带出来。');
+          points = computeRunPoints(gameState);
+        }
       } else {
+        setGameState(prev => ({ ...prev, bag: [] }));
+        setInsuranceKeptName(null);
+        setInsuranceSettlementMessage('你什么也没带出来。');
         points = computeRunPoints(gameState);
       }
     } else {
       points = computeRunPoints(gameState);
+      setInsuranceSettlementMessage(null);
     }
     addSurvivalPoints(points);
+    markRunSettled(gameState.runId);
     setSettlementRunPoints(points);
   }, [gameState.status]);
 
-  /** 通信失败时使用的 fallback，保证回合推进与扣电。 */
+  /** 通信失败时使用的 fallback，保证回合推进与扣电；choices 使用真实 ActionType。 */
   const buildFallbackResponse = (): TurnResponse => ({
     scene_blocks: [
       { type: 'TITLE', content: '通信中断' },
@@ -84,8 +123,9 @@ function RunScreen() {
     choices: [
       { id: 'fb-n', label: '向北', hint: '移动', risk: RiskLevel.LOW, preview_cost: {}, action_type: 'MOVE_N' },
       { id: 'fb-e', label: '向东', hint: '移动', risk: RiskLevel.LOW, preview_cost: {}, action_type: 'MOVE_E' },
-      { id: 'fb-search', label: '搜索', hint: '翻找', risk: RiskLevel.MID, preview_cost: {}, action_type: 'SEARCH' },
       { id: 'fb-s', label: '向南', hint: '移动', risk: RiskLevel.LOW, preview_cost: {}, action_type: 'MOVE_S' },
+      { id: 'fb-w', label: '向西', hint: '移动', risk: RiskLevel.LOW, preview_cost: {}, action_type: 'MOVE_W' },
+      { id: 'fb-search', label: '搜索', hint: '翻找', risk: RiskLevel.MID, preview_cost: {}, action_type: 'SEARCH' },
     ],
     ui: {
       progress: { turn_index: gameState.turn_index, milestones_hit: [] },
@@ -96,41 +136,63 @@ function RunScreen() {
     memory_update: '',
   });
 
-  const handleTurn = async (action: ActionType) => {
+  /** 唯一入口：推进回合。单飞锁 + 返回一致性校验，失败不写档。 */
+  const submitTurn = async (action: ActionType) => {
+    if (turnInFlight) return;
     setLastActionType(action);
     if (gameState.status !== 'PLAYING' && action !== 'INIT') return;
-    setIsProcessing(true);
+    setTurnInFlight(true);
+    setTurnError(null);
+    const clientTurnIndex = gameState.turn_index;
+    const runId = gameState.runId;
+    const snapshotState = action !== 'INIT' ? applyAction(gameState, action, {} as Parameters<typeof applyAction>[2]) : gameState;
+    const meta: TurnRequestMeta = { runId, clientTurnIndex };
     try {
+      const response = await fetchTurnResponse(snapshotState, action, meta);
+      const respTurnIndex = response.ui?.progress?.turn_index;
+      if (respTurnIndex != null) {
+        const expectedNext = clientTurnIndex + 1;
+        if (respTurnIndex !== expectedNext) {
+          setTurnError('回合同步异常，已取消本次推进，请重试');
+          return;
+        }
+      }
       if (action !== 'INIT') {
         setGameState(prev => applyAction(prev, action, {} as Parameters<typeof applyAction>[2]));
       }
-      const snapshotState = action !== 'INIT' ? applyAction(gameState, action, {} as Parameters<typeof applyAction>[2]) : gameState;
-      let response: TurnResponse;
-      try {
-        response = await fetchTurnResponse(snapshotState, action);
-      } catch {
-        response = buildFallbackResponse();
-      }
       setLastResponse(response);
       const turnIdx = snapshotState.turn_index;
-      const logEntry: LogTurn = {
+      const logEntry: LogbookEntry = {
         id: `${turnIdx}-${Date.now()}`,
-        turn_index: turnIdx,
-        action: String(action),
+        turn: turnIdx,
+        action,
+        timestamp: Date.now(),
         scene_blocks: response.scene_blocks ?? [],
-        at: Date.now(),
+        battery: snapshotState.battery,
+        hp: snapshotState.hp,
+        exposure: snapshotState.exposure,
+        status: snapshotState.status,
       };
       setLogbook(prev => [...prev, logEntry]);
       setLogbookOpenSet(prev => ({
         ...prev,
         [turnIdx]: true,
         [turnIdx - 1]: true,
+        [turnIdx - 2]: true,
       }));
-      const adds = response.ui?.bag_delta?.add ?? [];
+      const rawAdds = response.ui?.bag_delta?.add ?? [];
+      const adds: BagItem[] = rawAdds.map((a): BagItem => ({
+        id: a.id,
+        name: a.name,
+        type: (a.type as BagItem['type']) || 'MISC',
+        value: typeof a.value === 'number' && Number.isFinite(a.value) ? Math.floor(a.value) : 10,
+        tag: a.tag,
+        rarity: a.rarity,
+      }));
       const removes = response.ui?.bag_delta?.remove ?? [];
       if (response.ui?.bag_delta) {
         if (adds.length > 0) {
-          const emptySlots = getEmptyBagSlots(gameState);
+          const emptySlots = getEmptyBagSlots(snapshotState);
           if (emptySlots >= adds.length) {
             setGameState(prev => applyBagDelta(prev, adds, removes));
           } else {
@@ -147,8 +209,11 @@ function RunScreen() {
           setGameState(prev => applyBagDelta(prev, [], removes));
         }
       }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setTurnError(msg || '请求失败，请重试或返回避难所');
     } finally {
-      setIsProcessing(false);
+      setTurnInFlight(false);
     }
   };
 
@@ -156,7 +221,13 @@ function RunScreen() {
     hasCreditedRef.current = false;
     setSettlementRunPoints(null);
     setInsuranceKeptName(null);
-    setGameState(createInitialState());
+    setInsuranceSettlementMessage(null);
+    setSettlementButtonsDisabled(false);
+    setTurnError(null);
+    setRunConfig({ insuranceUsed: false });
+    const newState = createInitialState();
+    setCurrentRunId(newState.runId);
+    setGameState(newState);
     setLastResponse(null);
     setPendingAdds([]);
     setIsBagModalOpen(false);
@@ -164,7 +235,7 @@ function RunScreen() {
     setReplaceSlotMode(false);
     setLogbook([]);
     setLogbookOpenSet({});
-    handleTurn('INIT');
+    submitTurn('INIT');
   };
 
   const handleBagDiscard = () => {
@@ -184,7 +255,10 @@ function RunScreen() {
     const item = gameState.bag[slotIndex];
     const current = pendingAddItem;
     if (!item || !current) return;
-    setGameState(prev => applyBagDelta(prev, [current], [item.id]));
+    setGameState(prev => {
+      const next = applyBagDelta(prev, [current], [item.id]);
+      return { ...next, logs: [...next.logs, `你用${current.name}替换了${item.name}`] };
+    });
     setPendingAdds(prev => {
       const next = prev.slice(1);
       if (next.length === 0) {
@@ -199,7 +273,7 @@ function RunScreen() {
     });
   };
 
-  /** DEV-only: 拾取一件测试物品，走真实满包/队列路径。 */
+  /** DEV-only: +1 测试物品，未满直接入包并 log，已满弹替换弹窗。 */
   const devPickupOneItem = () => {
     devPickupCounterRef.current += 1;
     const n = devPickupCounterRef.current;
@@ -207,6 +281,8 @@ function RunScreen() {
       id: `dev-pickup-${Date.now()}-${n}`,
       name: `测试物品 #${n}`,
       type: 'MISC',
+      value: 10,
+      tag: 'loot',
     };
     if (isBagModalOpen) {
       setPendingAdds(prev => [...prev, testItem]);
@@ -214,7 +290,10 @@ function RunScreen() {
     }
     const emptySlots = getEmptyBagSlots(gameState);
     if (emptySlots >= 1) {
-      setGameState(prev => applyBagDelta(prev, [testItem], []));
+      setGameState(prev => {
+        const next = applyBagDelta(prev, [testItem], []);
+        return { ...next, logs: [...next.logs, '获得：' + testItem.name] };
+      });
     } else {
       setPendingAdds(prev => [...prev, testItem]);
       setPendingAddItem(testItem);
@@ -283,7 +362,8 @@ function RunScreen() {
                   bag: Array.from({ length: BAG_CAPACITY }, (_, i) => ({
                     id: `dev-fill-${i}`,
                     name: `测试物品${i + 1}`,
-                    type: 'MISC',
+                    type: 'MISC' as const,
+                    value: 10,
                   })),
                 }));
               }}
@@ -295,7 +375,7 @@ function RunScreen() {
               className="px-2 py-1 text-[10px] font-mono text-emerald-500 border border-emerald-700 bg-black/60 hover:bg-emerald-900/30 rounded"
               onClick={devPickupOneItem}
             >
-              拾取一件物品（测试）
+              +1 测试物品
             </button>
           </div>
         )}
@@ -337,7 +417,7 @@ function RunScreen() {
           <div className="p-3 border-b border-gray-800 flex justify-between items-center gap-2 text-[10px] bg-[#0d0d0d]">
              <span className="text-orange-500">TERMINAL.LOG</span>
              <div className="flex items-center gap-2">
-               {isProcessing && <span className="animate-pulse text-blue-400 italic">TRANSMITTING...</span>}
+               {turnInFlight && <span className="animate-pulse text-blue-400 italic">处理中…</span>}
                <button
                  type="button"
                  className="px-2 py-1 border border-gray-600 text-gray-400 hover:bg-gray-800 hover:text-white transition text-[10px]"
@@ -365,15 +445,23 @@ function RunScreen() {
                 <div className="text-left border border-gray-600 bg-[#0d0d0d] p-4 space-y-2">
                   <p className="text-sm text-gray-300">本局生存点：<span className="font-bold text-orange-400">+{settlementRunPoints ?? computeRunPoints(gameState)}</span></p>
                   <p className="text-sm text-gray-300">累计生存点：<span className="font-bold text-white">{getSurvivalPoints()}</span></p>
-                  {insuranceKeptName != null && (
-                    <p className="text-sm text-gray-300">保险袋保住：『{insuranceKeptName}』</p>
+                  {gameState.status === 'LOSS' && insuranceSettlementMessage != null && (
+                    <p className="text-sm text-gray-300">{insuranceSettlementMessage}</p>
                   )}
                 </div>
                 <div className="flex flex-wrap justify-center gap-3">
-                  <button onClick={() => { window.location.hash = '#/'; }} className="px-6 py-2 border border-gray-500 text-gray-300 hover:bg-gray-700 hover:text-white transition text-sm font-medium">
+                  <button
+                    onClick={() => { setSettlementButtonsDisabled(true); window.location.hash = '#/'; }}
+                    disabled={settlementButtonsDisabled}
+                    className="px-6 py-2 border border-gray-500 text-gray-300 hover:bg-gray-700 hover:text-white transition text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
                     返回避难所
                   </button>
-                  <button onClick={restartGame} className="px-6 py-2 border border-white text-white hover:bg-white hover:text-black transition text-sm font-bold">
+                  <button
+                    onClick={() => { setSettlementButtonsDisabled(true); restartGame(); }}
+                    disabled={settlementButtonsDisabled}
+                    className="px-6 py-2 border border-white text-white hover:bg-white hover:text-black transition text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
                     再来一局
                   </button>
                 </div>
@@ -386,15 +474,16 @@ function RunScreen() {
                 {lastResponse?.choices.map((choice, i) => (
                   <button
                     key={i}
-                    disabled={isProcessing}
+                    type="button"
+                    disabled={turnInFlight}
                     onClick={() => {
                       setLastActionType(choice.action_type);
-                      handleTurn(choice.action_type);
+                      submitTurn(choice.action_type);
                     }}
-                    className="group relative p-3 bg-gray-900 hover:bg-white/5 border border-gray-800 hover:border-gray-500 text-left transition disabled:opacity-50"
+                    className="group relative p-3 bg-gray-900 hover:bg-white/5 border border-gray-800 hover:border-gray-500 text-left transition disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <div className="flex justify-between items-start mb-1">
-                      <span className="text-xs font-bold text-orange-400 group-hover:text-orange-300 uppercase tracking-tighter">{choice.label}</span>
+                      <span className="text-xs font-bold text-orange-400 group-hover:text-orange-300 uppercase tracking-tighter">{turnInFlight ? '处理中…' : choice.label}</span>
                       <span className={`text-[8px] px-1 border ${choice.risk === 'HIGH' ? 'border-red-900 text-red-600' : choice.risk === 'MID' ? 'border-yellow-900 text-yellow-600' : 'border-green-900 text-green-700'}`}>
                         {choice.risk} RISK
                       </span>
@@ -404,7 +493,28 @@ function RunScreen() {
                 ))}
               </div>
             )}
-            {!lastResponse && isProcessing && <div className="text-center py-4 text-xs italic text-gray-600">Initializing environment...</div>}
+            {!lastResponse && turnInFlight && <div className="text-center py-4 text-xs italic text-gray-600">Initializing environment...</div>}
+            {turnError && (
+              <div className="p-3 bg-red-950/60 border border-red-800 rounded space-y-2">
+                <p className="text-xs text-red-300">{turnError}</p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className="px-3 py-1.5 text-[10px] border border-red-700 text-red-300 hover:bg-red-900/50 transition"
+                    onClick={() => setTurnError(null)}
+                  >
+                    重试
+                  </button>
+                  <button
+                    type="button"
+                    className="px-3 py-1.5 text-[10px] border border-gray-600 text-gray-300 hover:bg-gray-800 transition"
+                    onClick={() => { setTurnError(null); window.location.hash = '#/'; }}
+                  >
+                    返回避难所
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
         <div className="w-full md:w-64 flex flex-col gap-4">
@@ -438,7 +548,7 @@ function RunScreen() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70" role="dialog" aria-modal="true" aria-labelledby="bag-modal-title">
           <div className="w-full max-w-sm bg-[#111] border border-gray-700 shadow-2xl rounded-sm p-5 space-y-4">
             <h2 id="bag-modal-title" className="text-lg font-bold text-white">背包已满</h2>
-            <p className="text-sm text-gray-300">你发现了『{pendingAddItem.name}』，要怎么处理？</p>
+            <p className="text-sm text-gray-300">新物品：{pendingAddItem.name}（价值 {pendingAddItem.value}）</p>
             {!replaceSlotMode ? (
               <div className="flex flex-col gap-2">
                 <button
@@ -446,7 +556,7 @@ function RunScreen() {
                   className="w-full py-3 border border-gray-600 text-gray-300 hover:bg-gray-800 transition text-sm font-medium"
                   onClick={handleBagDiscard}
                 >
-                  丢弃新物品
+                  丢弃
                 </button>
                 <button
                   type="button"
@@ -458,7 +568,7 @@ function RunScreen() {
               </div>
             ) : (
               <>
-                <p className="text-xs text-gray-500">点选一个格子替换为该物品：</p>
+                <p className="text-xs text-gray-500">点选一格替换为该物品：</p>
                 <div className="grid grid-cols-4 gap-2">
                   {Array.from({ length: BAG_CAPACITY }).map((_, i) => {
                     const item = gameState.bag[i];
@@ -467,10 +577,10 @@ function RunScreen() {
                         key={i}
                         type="button"
                         disabled={!item}
-                        className={`h-12 border text-[10px] truncate p-1 transition ${item ? 'border-gray-600 bg-gray-900 hover:border-orange-500 hover:bg-orange-900/30' : 'border-dashed border-gray-800 bg-transparent opacity-40 cursor-not-allowed'}`}
+                        className={`h-14 border text-[10px] truncate p-1 flex flex-col items-center justify-center transition ${item ? 'border-gray-600 bg-gray-900 hover:border-orange-500 hover:bg-orange-900/30' : 'border-dashed border-gray-800 bg-transparent opacity-40 cursor-not-allowed'}`}
                         onClick={() => item && handleBagReplaceSlot(i)}
                       >
-                        {item ? item.name : '—'}
+                        {item ? <><span className="truncate w-full">{item.name}</span><span className="text-gray-500">价值 {item.value}</span></> : '—'}
                       </button>
                     );
                   })}
@@ -489,32 +599,28 @@ function RunScreen() {
       )}
 
       {isLogbookOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="logbook-title"
-          onClick={(e) => e.target === e.currentTarget && setIsLogbookOpen(false)}
-        >
-          <div className="w-[90%] max-w-xl h-[80vh] flex flex-col bg-[#111] border border-gray-700 shadow-2xl rounded-sm overflow-hidden" onClick={e => e.stopPropagation()}>
+        <>
+          <div className="fixed inset-0 z-50 bg-black/50" role="presentation" aria-hidden="true" onClick={() => setIsLogbookOpen(false)} />
+          <div className="fixed bottom-0 left-0 right-0 z-50 max-h-[80vh] h-[70vh] flex flex-col bg-[#111] border-t border-gray-700 rounded-t-xl shadow-2xl overflow-hidden" role="dialog" aria-modal="true" aria-labelledby="logbook-title">
             <div className="flex justify-between items-center p-3 border-b border-gray-800 bg-[#0d0d0d] shrink-0">
               <h2 id="logbook-title" className="text-base font-bold text-white">日志簿</h2>
-              <button type="button" className="px-2 py-1 text-xs text-gray-400 hover:text-white border border-gray-600 hover:bg-gray-800 transition" onClick={() => setIsLogbookOpen(false)}>关闭</button>
+              <button type="button" className="px-2 py-1 text-xs text-gray-400 hover:text-white border border-gray-600 hover:bg-gray-800 transition rounded" onClick={() => setIsLogbookOpen(false)}>关闭</button>
             </div>
             <div className="flex-1 overflow-y-auto p-3 space-y-2">
               {[...logbook].reverse().map((entry) => {
-                const maxT = logbook.length ? Math.max(...logbook.map(l => l.turn_index)) : -1;
-                const isRecent2 = entry.turn_index === maxT || entry.turn_index === maxT - 1;
-                const isOpen = logbookOpenSet[entry.turn_index] ?? isRecent2;
+                const maxT = logbook.length ? Math.max(...logbook.map(l => l.turn)) : -1;
+                const isRecent3 = entry.turn >= maxT - 2;
+                const isOpen = logbookOpenSet[entry.turn] ?? isRecent3;
+                const batteryStr = entry.battery != null ? `${entry.battery}/${BATTERY_MAX}` : '—';
                 return (
                   <div key={entry.id} className="border border-gray-800 rounded overflow-hidden bg-[#0d0d0d]">
                     <button
                       type="button"
-                      className="w-full px-3 py-2 text-left text-sm text-gray-300 hover:bg-gray-800/80 flex justify-between items-center"
-                      onClick={() => setLogbookOpenSet(prev => ({ ...prev, [entry.turn_index]: !(prev[entry.turn_index] ?? isRecent2) }))}
+                      className="w-full px-3 py-2.5 text-left text-sm text-gray-300 hover:bg-gray-800/80 flex justify-between items-center gap-2"
+                      onClick={() => setLogbookOpenSet(prev => ({ ...prev, [entry.turn]: !(prev[entry.turn] ?? isRecent3) }))}
                     >
-                      <span>第 {entry.turn_index} 回合 · {actionLabel(entry.action as ActionType)}</span>
-                      <span className="text-[10px] text-gray-500">{isOpen ? '▼' : '▶'}</span>
+                      <span className="flex-1 min-w-0 truncate">第 {entry.turn} 回合 · {actionLabel(entry.action)} · 电量 {batteryStr}</span>
+                      <span className="text-[10px] text-gray-500 shrink-0" aria-hidden>{isOpen ? '▼' : '▶'}</span>
                     </button>
                     {isOpen && (
                       <div className="px-3 pb-3 pt-1 space-y-3 border-t border-gray-800">
@@ -534,7 +640,7 @@ function RunScreen() {
               {logbook.length === 0 && <p className="text-xs text-gray-500 text-center py-4">暂无记录</p>}
             </div>
           </div>
-        </div>
+        </>
       )}
 
       <style>{`
