@@ -10,6 +10,7 @@ import { getSurvivalPoints, addSurvivalPoints, computeRunPoints, getCurrentRunId
 import { getRunConfig, setRunConfig } from './game/runConfig';
 import { pickKeptItem, setStoredKeptItem } from './game/insurance';
 import { loadContextFeed, pushContextFeed, clearContextFeed, compressOutcome, truncateSceneBlocks, formatDeltas, type TurnSummary } from './game/contextFeed';
+import { getTensionLabel, getTensionHintForTurn } from './game/tension';
 import ShelterHome from './ShelterHome';
 
 type LogbookEntry = {
@@ -78,6 +79,8 @@ function RunScreen() {
   const [isSummaryDrawerOpen, setIsSummaryDrawerOpen] = useState(false);
   const [activeRecap, setActiveRecap] = useState<TurnSummary | null>(null);
   const recapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [tensionHint, setTensionHint] = useState<string | null>(null);
+  const tensionHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasCreditedRef = useRef(false);
   const hasInitializedRef = useRef(false);
@@ -100,8 +103,28 @@ function RunScreen() {
         clearTimeout(recapTimerRef.current);
         recapTimerRef.current = null;
       }
+      if (tensionHintTimerRef.current) {
+        clearTimeout(tensionHintTimerRef.current);
+        tensionHintTimerRef.current = null;
+      }
     };
   }, []);
+
+  /** 局势升温提示 4 秒后消失。 */
+  useEffect(() => {
+    if (!tensionHint) return;
+    if (tensionHintTimerRef.current) clearTimeout(tensionHintTimerRef.current);
+    tensionHintTimerRef.current = setTimeout(() => {
+      tensionHintTimerRef.current = null;
+      setTensionHint(null);
+    }, 4000);
+    return () => {
+      if (tensionHintTimerRef.current) {
+        clearTimeout(tensionHintTimerRef.current);
+        tensionHintTimerRef.current = null;
+      }
+    };
+  }, [tensionHint]);
 
   /** 仅局内且未初始化过时自动 INIT；结算/非 PLAYING、已失败 INIT 或刷新恢复的失败态不自动发。 */
   useEffect(() => {
@@ -153,7 +176,7 @@ function RunScreen() {
     const hasExtract = choices.some((c) => (c.label && (c.label.includes('撤离-近') || c.label.includes('撤离-远'))));
     if (!hasExtract) return;
     extractHintShownRef.current = true;
-    setActiveHint({ key: 'EXTRACT_CHOICES', text: '撤离有两种：近撤离要等一回合更危险；远撤离更耗电但更稳。' });
+    setActiveHint({ key: 'EXTRACT_CHOICES', text: '撤离有两种：近撤离要停住片刻更危险；远撤离更耗电但更稳。' });
   }, [lastResponse?.choices, featureFlags.tutorialHintsEnabled]);
 
   /** 提示条自动消失（8 秒）。 */
@@ -253,7 +276,7 @@ function RunScreen() {
       if (respTurnIndex != null) {
         const expectedNext = clientTurnIndex + 1;
         if (respTurnIndex !== expectedNext) {
-          setTurnError({ type: 'UNKNOWN', message: '回合同步异常，已取消本次推进，请重试' });
+          setTurnError({ type: 'UNKNOWN', message: '进度同步异常，已取消本次推进，请重试' });
           logTurnTrace({
             ts: Date.now(),
             runId,
@@ -332,6 +355,9 @@ function RunScreen() {
         statusBefore,
         decisionLabel: lastChoiceLabel ?? actionLabel(action),
       });
+      const nextTurnIndex = action === "INIT" ? 1 : snapshotState.turn_index + 1;
+      const tensionHintMsg = getTensionHintForTurn(nextTurnIndex);
+      if (tensionHintMsg) setTensionHint(tensionHintMsg);
       const rawAdds = response.ui?.bag_delta?.add ?? [];
       const adds: BagItem[] = rawAdds.map((a): BagItem => ({
         id: a.id,
@@ -418,7 +444,7 @@ function RunScreen() {
       if (respTurnIndex != null) {
         const expectedNext = clientTurnIndex + 1;
         if (respTurnIndex !== expectedNext) {
-          setTurnError({ type: 'UNKNOWN', message: '回合同步异常，已取消本次推进，请重试' });
+          setTurnError({ type: 'UNKNOWN', message: '进度同步异常，已取消本次推进，请重试' });
           if (loadFeatureFlags().turnTraceEnabled) {
             logTurnTrace({
               ts: Date.now(),
@@ -499,6 +525,9 @@ function RunScreen() {
         statusBefore,
         decisionLabel: actionLabel(action),
       });
+      const nextTurnIndex = action === "INIT" ? 1 : snapshotState.turn_index + 1;
+      const tensionHintMsg = getTensionHintForTurn(nextTurnIndex);
+      if (tensionHintMsg) setTensionHint(tensionHintMsg);
       const rawAdds = response.ui?.bag_delta?.add ?? [];
       const adds: BagItem[] = rawAdds.map((a): BagItem => ({
         id: a.id,
@@ -584,7 +613,12 @@ function RunScreen() {
       clearTimeout(recapTimerRef.current);
       recapTimerRef.current = null;
     }
+    if (tensionHintTimerRef.current) {
+      clearTimeout(tensionHintTimerRef.current);
+      tensionHintTimerRef.current = null;
+    }
     setActiveRecap(null);
+    setTensionHint(null);
     const newState = createInitialState();
     setCurrentRunId(newState.runId);
     setGameState(newState);
@@ -662,7 +696,12 @@ function RunScreen() {
       clearTimeout(recapTimerRef.current);
       recapTimerRef.current = null;
     }
+    if (tensionHintTimerRef.current) {
+      clearTimeout(tensionHintTimerRef.current);
+      tensionHintTimerRef.current = null;
+    }
     setActiveRecap(null);
+    setTensionHint(null);
     const newState = createInitialState();
     setCurrentRunId(newState.runId);
     setGameState(newState);
@@ -770,7 +809,7 @@ function RunScreen() {
              )}
              {import.meta.env.DEV && (
                <div className="text-[10px] text-gray-500">
-                 DEV turn={gameState.turn_index} action={String(lastActionType)} battery={gameState.battery}
+                 步数：{gameState.turn_index} · action={String(lastActionType)} · 电量={gameState.battery}
                </div>
              )}
           </div>
@@ -782,14 +821,14 @@ function RunScreen() {
           <div className="h-full bg-orange-800 transition-all duration-500" style={{ width: `${(gameState.turn_index / MAX_TURNS) * 100}%` }}></div>
         </div>
         <div className="flex justify-between mt-1 text-[10px] text-gray-600 font-mono tracking-widest">
-          <span>START</span>
-          <span>TURN {gameState.turn_index}/{MAX_TURNS}</span>
-          <span>END</span>
+          <span>起点</span>
+          <span>局势：{getTensionLabel(gameState.turn_index)}</span>
+          <span>终点</span>
         </div>
         {import.meta.env.DEV && (
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <div className="px-2 py-1 text-[10px] font-mono text-gray-500 bg-black/60 border border-gray-700 rounded">
-              电量: {gameState.battery ?? BATTERY_MAX}/{BATTERY_MAX} · 上次操作: {lastActionType ?? '-'} · logbook={logbook.length}
+              电量: {gameState.battery ?? BATTERY_MAX}/{BATTERY_MAX} · 上次操作: {lastActionType ?? '-'} · 步数: {gameState.turn_index} · logbook={logbook.length}
             </div>
             <button
               type="button"
@@ -856,9 +895,15 @@ function RunScreen() {
         <div className="flex-1 min-w-0 flex flex-col bg-[#111] border border-gray-800 overflow-hidden relative">
           <div className="p-2 md:p-3 border-b border-gray-800 flex flex-wrap items-center justify-between gap-2 text-[10px] bg-[#0d0d0d] shrink-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-orange-500 font-medium">TERMINAL.LOG</span>
-              <span className="text-gray-500 font-mono">TURN {gameState.turn_index}/{MAX_TURNS}</span>
-              {turnInFlight && <span className="animate-pulse text-blue-400 italic">处理中…</span>}
+              <span className="text-orange-500 font-medium">冷寂街区</span>
+              <span className="text-gray-500">
+                局势：{getTensionLabel(gameState.turn_index)}
+                {turnInFlight ? (
+                  <span className="animate-pulse text-blue-400 italic ml-1">· 处理中…</span>
+                ) : (
+                  <span className="text-gray-400 ml-1">· 行动进行中</span>
+                )}
+              </span>
               {(gameState.battery ?? BATTERY_MAX) <= 0 && (
                 <span className="px-1.5 py-0.5 text-[9px] font-bold text-red-500 border border-red-700 bg-black/60">黑暗模式</span>
               )}
@@ -897,11 +942,11 @@ function RunScreen() {
             </div>
           )}
           {featureFlags.recapBarEnabled && activeRecap && (
-            <div className="shrink-0 px-3 md:px-4 py-2 pointer-events-none" aria-live="polite" aria-label="本回合结算">
+            <div className="shrink-0 px-3 md:px-4 py-2 pointer-events-none" aria-live="polite" aria-label="本步结算">
               <div className="max-w-[860px] mx-auto rounded border border-white/10 bg-black/30 px-3 py-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
                 <div className="min-w-0 flex-1">
                   <p className="text-[11px] md:text-xs text-zinc-200/90 truncate">
-                    <span className="font-semibold text-zinc-100">落笔：{activeRecap.decisionText}</span>
+                    <span className="font-semibold text-zinc-100">落笔：{(activeRecap.decisionText ?? '').replace(/回合/g, '片刻')}</span>
                     <span className="text-zinc-400/80 mx-1">→</span>
                     <span className="text-zinc-200/80">{activeRecap.outcomeText}</span>
                   </p>
@@ -925,6 +970,11 @@ function RunScreen() {
                   ))}
                 </div>
               </div>
+            </div>
+          )}
+          {tensionHint && (
+            <div className="shrink-0 px-3 md:px-4 py-1.5 pointer-events-none" aria-live="polite">
+              <p className="max-w-[860px] mx-auto text-[11px] text-zinc-400/90 italic">{tensionHint}</p>
             </div>
           )}
           {turnError && !turnErrorDismissed && (
@@ -998,7 +1048,7 @@ function RunScreen() {
                         className="w-full text-left rounded border border-gray-700/60 bg-black/30 px-2.5 py-1.5 hover:bg-black/50 hover:border-gray-600/60 transition"
                         onClick={() => { setSelectedSummary(item); setIsSummaryDrawerOpen(true); }}
                       >
-                        <p className="font-medium text-zinc-100 border-l-2 border-zinc-500/60 pl-3">你选择：{item.decisionText}</p>
+                        <p className="font-medium text-zinc-100 border-l-2 border-zinc-500/60 pl-3">你选择：{(item.decisionText ?? '').replace(/回合/g, '片刻')}</p>
                         <p className="text-sm text-zinc-200/80 line-clamp-2 mt-0.5">{item.outcomeText}</p>
                         <div className="flex flex-wrap gap-1 mt-1.5">
                           {item.deltas.batDelta != null && item.deltas.batDelta !== 0 && (
@@ -1113,12 +1163,12 @@ function RunScreen() {
                     className="group relative p-3 min-h-[44px] bg-gray-900 hover:bg-white/5 border border-gray-800 hover:border-gray-500 text-left transition disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <div className="flex justify-between items-start mb-1">
-                      <span className="text-xs font-bold text-orange-400 group-hover:text-orange-300 uppercase tracking-tighter">{turnInFlight ? '处理中…' : choice.label}</span>
+                      <span className="text-xs font-bold text-orange-400 group-hover:text-orange-300 uppercase tracking-tighter">{turnInFlight ? '处理中…' : (choice.label ?? '').replace(/回合/g, '片刻')}</span>
                       <span className={`text-[8px] px-1 border ${choice.risk === 'HIGH' ? 'border-red-900 text-red-600' : choice.risk === 'MID' ? 'border-yellow-900 text-yellow-600' : 'border-green-900 text-green-700'}`}>
                         {choice.risk} RISK
                       </span>
                     </div>
-                    <p className="text-[10px] text-gray-500 line-clamp-1">{choice.hint}</p>
+                    <p className="text-[10px] text-gray-500 line-clamp-1">{(choice.hint ?? '').replace(/回合/g, '片刻')}</p>
                   </button>
                 ))}
               </div>
@@ -1253,18 +1303,18 @@ function RunScreen() {
               md:bottom-0 md:top-0 md:left-auto md:right-0 md:max-h-none md:w-[420px]"
             role="dialog"
             aria-modal="true"
-            aria-label={selectedSummary ? `第 ${selectedSummary.turn} 回合详情` : '全部记录'}
+            aria-label={selectedSummary ? `第 ${selectedSummary.turn} 步详情` : '全部记录'}
           >
             <div className="flex justify-between items-center p-3 border-b border-gray-800 bg-[#0d0d0d] shrink-0">
               <h2 className="text-base font-bold text-white">
-                {selectedSummary ? `第 ${selectedSummary.turn} 回合` : '全部记录'}
+                {selectedSummary ? `第 ${selectedSummary.turn} 步` : '全部记录'}
               </h2>
               <button type="button" className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-800 rounded" onClick={() => { setIsSummaryDrawerOpen(false); setSelectedSummary(null); }} aria-label="关闭">×</button>
             </div>
             <div className="flex-1 overflow-y-auto p-3 min-h-0">
               {selectedSummary ? (
                 <div className="space-y-4">
-                  <p className="font-medium text-zinc-100 border-l-2 border-zinc-500/60 pl-3">你选择：{selectedSummary.decisionText}</p>
+                  <p className="font-medium text-zinc-100 border-l-2 border-zinc-500/60 pl-3">你选择：{(selectedSummary.decisionText ?? '').replace(/回合/g, '片刻')}</p>
                   <div className="flex flex-wrap gap-1.5">
                     {selectedSummary.deltas.batDelta != null && (
                       <span className="text-[12px] text-zinc-100/80 bg-white/5 border border-white/10 rounded px-2 py-0.5 font-mono tabular-nums">电量 {selectedSummary.deltas.batDelta > 0 ? '+' : ''}{selectedSummary.deltas.batDelta}</span>
@@ -1297,7 +1347,7 @@ function RunScreen() {
                       className="w-full text-left rounded border border-gray-700/60 bg-black/30 px-2.5 py-1.5 hover:bg-black/50 hover:border-gray-600/60 transition"
                       onClick={() => setSelectedSummary(item)}
                     >
-                      <p className="font-medium text-zinc-100 border-l-2 border-zinc-500/60 pl-3 text-sm">第 {item.turn} 回合 · 你选择：{item.decisionText}</p>
+                      <p className="font-medium text-zinc-100 border-l-2 border-zinc-500/60 pl-3 text-sm">第 {item.turn} 步 · 你选择：{(item.decisionText ?? '').replace(/回合/g, '片刻')}</p>
                       <p className="text-xs text-zinc-200/80 line-clamp-2 mt-0.5">{item.outcomeText}</p>
                       <div className="flex flex-wrap gap-1 mt-1">
                         {item.deltas.batDelta != null && item.deltas.batDelta !== 0 && <span className="text-[11px] text-zinc-100/80 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 font-mono">电量 {item.deltas.batDelta > 0 ? '+' : ''}{item.deltas.batDelta}</span>}
@@ -1335,7 +1385,7 @@ function RunScreen() {
                       className="w-full px-3 py-2.5 text-left text-sm text-gray-300 hover:bg-gray-800/80 flex justify-between items-center gap-2"
                       onClick={() => setLogbookOpenSet(prev => ({ ...prev, [entry.turn]: !(prev[entry.turn] ?? isRecent3) }))}
                     >
-                      <span className="flex-1 min-w-0 truncate">第 {entry.turn} 回合 · {actionLabel(entry.action)} · 电量 {batteryStr}</span>
+                      <span className="flex-1 min-w-0 truncate">第 {entry.turn} 步 · {actionLabel(entry.action)} · 电量 {batteryStr}</span>
                       <span className="text-[10px] text-gray-500 shrink-0" aria-hidden>{isOpen ? '▼' : '▶'}</span>
                     </button>
                     {isOpen && (

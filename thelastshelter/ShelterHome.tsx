@@ -205,12 +205,12 @@ const ShelterHome: React.FC = () => {
             {[
               { key: "contractsEnabled" as const, label: "合同挑战（Contracts）" },
               { key: "insurancePayEnabled" as const, label: "保险袋付费入口" },
-              { key: "turnTraceEnabled" as const, label: "回合追踪（TurnTrace）" },
+              { key: "turnTraceEnabled" as const, label: "行动追踪（TurnTrace）" },
               { key: "fallbackBadgeEnabled" as const, label: "兜底提示（Fallback Badge）" },
               { key: "shelterHealthCheckEnabled" as const, label: "检查连接按钮" },
               { key: "tutorialHintsEnabled" as const, label: "新手提示" },
               { key: "mapPanelEnabled" as const, label: "地图面板" },
-              { key: "recapBarEnabled" as const, label: "回合结算条（RecapBar）" },
+              { key: "recapBarEnabled" as const, label: "行动结算条（RecapBar）" },
             ].map(({ key, label }) => (
               <label key={key} className="flex items-center gap-2 cursor-pointer group py-0.5">
                 <input
