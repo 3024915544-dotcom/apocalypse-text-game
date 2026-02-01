@@ -1,3 +1,8 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Modal open: lock body scroll only when overlay/dialog is open (Step 5). */
+body.modal-open {
+  overflow: hidden;
+}

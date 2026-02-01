@@ -1136,8 +1136,14 @@ function RunScreen() {
     }
   };
 
+  const isAnyModalOpen = isBagModalOpen || isRightDrawerOpen || isSummaryDrawerOpen || isLogbookOpen;
+  useEffect(() => {
+    if (isAnyModalOpen) document.body.classList.add('modal-open');
+    return () => { document.body.classList.remove('modal-open'); };
+  }, [isAnyModalOpen]);
+
   return (
-    <div className="h-screen w-full flex flex-col bg-[#0a0a0a] text-[#d1d1d1] selection:bg-red-900/40 p-2 md:p-6 overflow-hidden relative">
+    <div className="h-[100dvh] w-full flex flex-col bg-[#0a0a0a] text-[#d1d1d1] selection:bg-red-900/40 p-2 md:p-6 relative">
       <div className="absolute inset-0 opacity-[0.03] pointer-events-none bg-[url('https://www.transparenttextures.com/patterns/asfalt-dark.png')]" aria-hidden="true" />
       <div className="flex flex-col mb-4 relative z-10">
         <div className="flex justify-between items-end mb-2">
@@ -1219,7 +1225,7 @@ function RunScreen() {
           </div>
         )}
       </div>
-      <div className="flex-1 flex flex-row overflow-hidden relative z-10 min-h-0">
+      <div className="flex-1 flex flex-row min-h-0 overflow-hidden relative z-10">
         {featureFlags.mapPanelEnabled && (
           <div className="w-[260px] shrink-0 h-full flex flex-col hidden md:flex">
             <div className="bg-[#111] p-3 border border-gray-800 h-full flex flex-col">
@@ -1254,7 +1260,7 @@ function RunScreen() {
             </div>
           </div>
         )}
-        <div className="flex-1 min-w-0 flex flex-col bg-[#111] border border-gray-800 overflow-hidden relative">
+        <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-[#111] border border-gray-800 relative">
           <div className="p-2 md:p-3 border-b border-gray-800 flex flex-wrap items-center justify-between gap-2 text-[10px] bg-[#0d0d0d] shrink-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-orange-500 font-medium">冷寂街区</span>
@@ -1412,7 +1418,11 @@ function RunScreen() {
               </div>
             </div>
           )}
-          <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 min-h-0 bg-black/20 md:bg-black/15">
+          <div
+            ref={scrollRef}
+            className="flex-1 overflow-y-auto overscroll-contain p-4 min-h-0 bg-black/20 md:bg-black/15"
+            style={{ WebkitOverflowScrolling: 'touch' }}
+          >
             <div className="max-w-[860px] mx-auto w-full px-3 md:px-6 space-y-4">
               {contextFeed.length > 0 && (
                 <section className="shrink-0" aria-label="本局记录">
@@ -1882,69 +1892,71 @@ function RunScreen() {
 
       {isBagModalOpen && pendingAddItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70" role="dialog" aria-modal="true" aria-labelledby="bag-modal-title">
-          <div className="w-full max-w-sm bg-[#111] border border-gray-700 shadow-2xl rounded-sm p-5 space-y-4">
-            <h2 id="bag-modal-title" className="text-lg font-bold text-white">背包已满</h2>
-            <div>
-              <p className="text-sm text-gray-300">
-                新物品：{pendingAddItem.name}
-                {getItemTier(pendingAddItem.name) !== '普通' && (
-                  <span className="ml-1.5 text-[10px] text-amber-200/90 border border-amber-700/50 rounded px-1 py-0.5">【{getItemTier(pendingAddItem.name)}】</span>
+          <div className="w-full max-w-sm max-h-[80dvh] flex flex-col bg-[#111] border border-gray-700 shadow-2xl rounded-sm overflow-hidden">
+            <div className="flex-1 overflow-y-auto p-5 space-y-4 min-h-0" style={{ WebkitOverflowScrolling: 'touch' }}>
+              <h2 id="bag-modal-title" className="text-lg font-bold text-white shrink-0">背包已满</h2>
+              <div>
+                <p className="text-sm text-gray-300">
+                  新物品：{pendingAddItem.name}
+                  {getItemTier(pendingAddItem.name) !== '普通' && (
+                    <span className="ml-1.5 text-[10px] text-amber-200/90 border border-amber-700/50 rounded px-1 py-0.5">【{getItemTier(pendingAddItem.name)}】</span>
+                  )}
+                </p>
+                {getItemPurpose(pendingAddItem.name) && (
+                  <p className="text-xs text-zinc-300/70 mt-0.5 line-clamp-1">用途：{getItemPurpose(pendingAddItem.name)}</p>
                 )}
-              </p>
-              {getItemPurpose(pendingAddItem.name) && (
-                <p className="text-xs text-zinc-300/70 mt-0.5 line-clamp-1">用途：{getItemPurpose(pendingAddItem.name)}</p>
+              </div>
+              {!replaceSlotMode ? (
+                <div className="flex flex-col gap-2">
+                  <button
+                    type="button"
+                    className="w-full py-3 border border-gray-600 text-gray-300 hover:bg-gray-800 transition text-sm font-medium"
+                    onClick={handleBagDiscard}
+                  >
+                    丢弃
+                  </button>
+                  <button
+                    type="button"
+                    className="w-full py-3 border border-orange-600 text-orange-400 hover:bg-orange-900/40 transition text-sm font-medium"
+                    onClick={() => setReplaceSlotMode(true)}
+                  >
+                    替换背包物品
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <p className="text-xs text-gray-500">点选一格替换为该物品：</p>
+                  <div className="grid grid-cols-4 gap-2">
+                    {Array.from({ length: BAG_CAPACITY }).map((_, i) => {
+                      const item = gameState.bag[i];
+                      return (
+                        <button
+                          key={i}
+                          type="button"
+                          disabled={!item}
+                          className={`h-14 border text-[10px] truncate p-1 flex flex-col items-center justify-center transition ${item ? 'border-gray-600 bg-gray-900 hover:border-orange-500 hover:bg-orange-900/30' : 'border-dashed border-gray-800 bg-transparent opacity-40 cursor-not-allowed'}`}
+                          onClick={() => item && handleBagReplaceSlot(i)}
+                        >
+                          {item ? (
+                            <>
+                              <span className="truncate w-full">{item.name}</span>
+                              {getItemPurpose(item.name) ? <span className="text-[9px] text-zinc-400/70 truncate w-full">用途：{getItemPurpose(item.name)}</span> : <span className="text-gray-500">价值 {item.value}</span>}
+                            </>
+                          ) : '—'}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <button
+                    type="button"
+                    className="w-full py-2 text-xs text-gray-500 hover:text-gray-300"
+                    onClick={() => setReplaceSlotMode(false)}
+                  >
+                    取消
+                  </button>
+                </>
               )}
             </div>
-            {!replaceSlotMode ? (
-              <div className="flex flex-col gap-2">
-                <button
-                  type="button"
-                  className="w-full py-3 border border-gray-600 text-gray-300 hover:bg-gray-800 transition text-sm font-medium"
-                  onClick={handleBagDiscard}
-                >
-                  丢弃
-                </button>
-                <button
-                  type="button"
-                  className="w-full py-3 border border-orange-600 text-orange-400 hover:bg-orange-900/40 transition text-sm font-medium"
-                  onClick={() => setReplaceSlotMode(true)}
-                >
-                  替换背包物品
-                </button>
-              </div>
-            ) : (
-              <>
-                <p className="text-xs text-gray-500">点选一格替换为该物品：</p>
-                <div className="grid grid-cols-4 gap-2">
-                  {Array.from({ length: BAG_CAPACITY }).map((_, i) => {
-                    const item = gameState.bag[i];
-                    return (
-                      <button
-                        key={i}
-                        type="button"
-                        disabled={!item}
-                        className={`h-14 border text-[10px] truncate p-1 flex flex-col items-center justify-center transition ${item ? 'border-gray-600 bg-gray-900 hover:border-orange-500 hover:bg-orange-900/30' : 'border-dashed border-gray-800 bg-transparent opacity-40 cursor-not-allowed'}`}
-                        onClick={() => item && handleBagReplaceSlot(i)}
-                      >
-                        {item ? (
-                          <>
-                            <span className="truncate w-full">{item.name}</span>
-                            {getItemPurpose(item.name) ? <span className="text-[9px] text-zinc-400/70 truncate w-full">用途：{getItemPurpose(item.name)}</span> : <span className="text-gray-500">价值 {item.value}</span>}
-                          </>
-                        ) : '—'}
-                      </button>
-                    );
-                  })}
-                </div>
-                <button
-                  type="button"
-                  className="w-full py-2 text-xs text-gray-500 hover:text-gray-300"
-                  onClick={() => setReplaceSlotMode(false)}
-                >
-                  取消
-                </button>
-              </>
-            )}
           </div>
         </div>
       )}
@@ -1954,7 +1966,7 @@ function RunScreen() {
           <div className="fixed inset-0 z-50 bg-black/50 md:bg-black/40" role="presentation" aria-hidden="true" onClick={() => { setIsSummaryDrawerOpen(false); setSelectedSummary(null); }} />
           <div
             className="fixed z-50 flex flex-col bg-[#111] border border-gray-800 shadow-2xl overflow-hidden transition-transform duration-200 ease-out md:rounded-l-xl
-              bottom-0 left-0 right-0 max-h-[85vh] rounded-t-xl
+              bottom-0 left-0 right-0 max-h-[85dvh] rounded-t-xl
               md:bottom-0 md:top-0 md:left-auto md:right-0 md:max-h-none md:w-[420px]"
             role="dialog"
             aria-modal="true"
@@ -1966,7 +1978,7 @@ function RunScreen() {
               </h2>
               <button type="button" className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-800 rounded" onClick={() => { setIsSummaryDrawerOpen(false); setSelectedSummary(null); }} aria-label="关闭">×</button>
             </div>
-            <div className="flex-1 overflow-y-auto p-3 min-h-0">
+            <div className="flex-1 overflow-y-auto overscroll-contain p-3 min-h-0" style={{ WebkitOverflowScrolling: 'touch' }}>
               {selectedSummary ? (
                 <div className="space-y-4">
                   <p className="font-medium text-zinc-100 border-l-2 border-zinc-500/60 pl-3">你选择：{(selectedSummary.decisionText ?? '').replace(/回合/g, '片刻')}</p>
@@ -2022,12 +2034,12 @@ function RunScreen() {
       {isLogbookOpen && (
         <>
           <div className="fixed inset-0 z-50 bg-black/50" role="presentation" aria-hidden="true" onClick={() => setIsLogbookOpen(false)} />
-          <div className="fixed bottom-0 left-0 right-0 z-50 max-h-[80vh] h-[70vh] flex flex-col bg-[#111] border-t border-gray-700 rounded-t-xl shadow-2xl overflow-hidden" role="dialog" aria-modal="true" aria-labelledby="logbook-title">
+          <div className="fixed bottom-0 left-0 right-0 z-50 max-h-[80dvh] flex flex-col bg-[#111] border-t border-gray-700 rounded-t-xl shadow-2xl overflow-hidden" role="dialog" aria-modal="true" aria-labelledby="logbook-title">
             <div className="flex justify-between items-center p-3 border-b border-gray-800 bg-[#0d0d0d] shrink-0">
               <h2 id="logbook-title" className="text-base font-bold text-white">完整日志</h2>
               <button type="button" className="px-2 py-1 text-xs text-gray-400 hover:text-white border border-gray-600 hover:bg-gray-800 transition rounded" onClick={() => setIsLogbookOpen(false)}>关闭</button>
             </div>
-            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            <div className="flex-1 overflow-y-auto overscroll-contain p-3 space-y-2 min-h-0" style={{ WebkitOverflowScrolling: 'touch' }}>
               {[...logbook].reverse().map((entry) => {
                 const maxT = logbook.length ? Math.max(...logbook.map(l => l.turn)) : -1;
                 const isRecent3 = entry.turn >= maxT - 2;
