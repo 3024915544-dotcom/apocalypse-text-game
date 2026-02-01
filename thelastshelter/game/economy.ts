@@ -1,11 +1,15 @@
 /**
  * 生存点货币：本局结算后累加写入 localStorage。
  * key: m_apoc_currency_survival_points_v1
+ * runId 持久化：m_apoc_currentRunId_v1
+ * 已结算集合：m_apoc_settledRunIds_v1
  */
 
 import type { GameState } from "../types";
 
 const STORAGE_KEY = "m_apoc_currency_survival_points_v1";
+const RUN_ID_KEY = "m_apoc_currentRunId_v1";
+const SETTLED_RUNS_KEY = "m_apoc_settledRunIds_v1";
 
 function parsePoints(raw: string | null): number {
   if (raw == null) return 0;
@@ -62,4 +66,56 @@ export function computeRunPoints(state: GameState, keptItem?: { value?: number }
   if (keptItem != null) return Math.floor(itemValue(keptItem) * 0.2);
   const lootValue = state.bag.filter(Boolean).length;
   return Math.floor(lootValue * 0.2);
+}
+
+/** 读取当前 runId（刷新后仍能拿到同一局的 runId）。 */
+export function getCurrentRunId(): string | null {
+  try {
+    return localStorage.getItem(RUN_ID_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** 写入当前 runId（每次开新局时调用）。 */
+export function setCurrentRunId(runId: string): void {
+  try {
+    localStorage.setItem(RUN_ID_KEY, runId);
+  } catch {
+    // 忽略
+  }
+}
+
+function getSettledRunIds(): Record<string, true> {
+  try {
+    const raw = localStorage.getItem(SETTLED_RUNS_KEY);
+    if (raw == null) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed as Record<string, true>;
+  } catch {
+    return {};
+  }
+}
+
+function saveSettledRunIds(settled: Record<string, true>): void {
+  try {
+    localStorage.setItem(SETTLED_RUNS_KEY, JSON.stringify(settled));
+  } catch {
+    // 忽略
+  }
+}
+
+/** 检查某 runId 是否已结算入账。 */
+export function isRunSettled(runId: string): boolean {
+  const settled = getSettledRunIds();
+  return settled[runId] === true;
+}
+
+/** 标记某 runId 已结算（幂等，多次调用无副作用）。 */
+export function markRunSettled(runId: string): void {
+  const settled = getSettledRunIds();
+  if (settled[runId] === true) return;
+  settled[runId] = true;
+  saveSettledRunIds(settled);
 }

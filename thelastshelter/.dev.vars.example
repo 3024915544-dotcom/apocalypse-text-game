@@ -1,0 +1,2 @@
+# Local dev only. Copy to ".dev.vars" and fill your own secrets.
+DEEPSEEK_API_KEY=put_your_key_here

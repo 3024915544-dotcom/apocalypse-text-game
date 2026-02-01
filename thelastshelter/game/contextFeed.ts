@@ -3,6 +3,8 @@
  * key: m_apoc_context_feed_v1
  */
 
+import { getItemTier } from "./itemsCatalog";
+
 const STORAGE_KEY = "m_apoc_context_feed_v1";
 
 const MAX_SCENE_BLOCKS = 6;
@@ -26,6 +28,20 @@ export interface TurnSummary {
   isFallback?: boolean;
   /** 本回合是否进入黑暗模式（电量 ≤ 0）。 */
   enteredDarkMode?: boolean;
+  /** 电量危机变体：本回合获得电池/保险丝/导线等硬通货，recap 可强调值钱/稀缺。 */
+  addedValueItem?: boolean;
+  /** 撤离窗口存在时本回合选择了非撤离，recap 显示【拖延】。 */
+  choseNonExtractWhenExtractAvailable?: boolean;
+  /** 本步为赌感窗口（孤注一掷），recap 显示 badge。 */
+  isGamble?: boolean;
+  /** 本步为条件撤离（消耗保险丝），recap 显示 badge。 */
+  conditionalExtract?: boolean;
+  /** 本步为应急火花触发，recap 显示 badge。 */
+  isSpark?: boolean;
+  /** 本回合获得的物品名（用于显示价值档位 pill）。 */
+  gainedItemNames?: string[];
+  /** 本回合生效的牌面类型（服务端 meta.cards）。 */
+  activeCards?: string[];
 }
 
 /** 截断单条 content，最多 maxLen 字。 */
@@ -33,6 +49,24 @@ function truncateContent(s: string, maxLen: number = MAX_CONTENT_LEN): string {
   if (typeof s !== "string") return "";
   const t = s.trim();
   return t.length <= maxLen ? t : t.slice(0, maxLen) + "…";
+}
+
+const MAIN_NARRATIVE_MAX_LEN = 140;
+
+/**
+ * 主屏叙事去冗余：合并空行、轻量赘词清理、截断到 120–160 字。
+ * 用于主屏只展示 scene_blocks[0] 的压缩版。
+ */
+export function sanitizeNarrative(text: string | undefined, maxLen: number = MAIN_NARRATIVE_MAX_LEN): string {
+  if (text == null || typeof text !== "string") return "";
+  let t = text
+    .replace(/\n{2,}/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim();
+  const filler = /(据说|可以说|总之|话说回来|就这样|于是乎|就这样，?)/g;
+  t = t.replace(filler, "").replace(/\s{2,}/g, " ").trim();
+  if (t.length <= maxLen) return t;
+  return t.slice(0, maxLen) + "…";
 }
 
 /** 将 scene_blocks 转为轻量数组并截断：最多 maxBlocks 条，每条 content 最多 maxContentLen 字。 */
@@ -142,6 +176,37 @@ export function formatDeltas(summary: TurnSummary): DeltaPill[] {
   }
   if (summary.isFallback) {
     out.push({ label: "记录简化", kind: "neutral" });
+  }
+  if (summary.addedValueItem) {
+    out.push({ label: "值钱", kind: "pos" });
+  }
+  if (summary.gainedItemNames?.length) {
+    const hasKey = summary.gainedItemNames.some((n) => getItemTier(n) === "关键" || getItemTier(n) === "救命");
+    const hasWorth = summary.gainedItemNames.some((n) => getItemTier(n) === "值钱");
+    if (hasKey) out.push({ label: "关键物", kind: "pos" });
+    if (hasWorth && !summary.addedValueItem) out.push({ label: "值钱", kind: "pos" });
+  }
+  if (summary.choseNonExtractWhenExtractAvailable) {
+    out.push({ label: "拖延", kind: "neutral" });
+  }
+  if (summary.isGamble) {
+    out.push({ label: "孤注一掷", kind: "neutral" });
+  }
+  if (summary.conditionalExtract) {
+    out.push({ label: "保险丝 -1", kind: "neutral" });
+    out.push({ label: "条件撤离", kind: "pos" });
+  }
+  if (summary.isSpark) {
+    out.push({ label: "应急火花", kind: "pos" });
+  }
+  if (summary.activeCards?.includes("RARE_LOOT")) {
+    out.push({ label: "稀有机会", kind: "pos" });
+  }
+  if (summary.activeCards?.includes("GAMBLE")) {
+    out.push({ label: "孤注一掷", kind: "neutral" });
+  }
+  if (summary.activeCards?.includes("CONDITIONAL_EXTRACT")) {
+    out.push({ label: "条件撤离", kind: "pos" });
   }
   return out;
 }

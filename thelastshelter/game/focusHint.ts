@@ -1,16 +1,21 @@
 /**
  * 本步关注点提示：纯前端推导，不靠 AI。
- * 优先级：黑暗模式 > 撤离窗口 > 电量见底 > 背包接近满 > 默认。
+ * 优先级：黑暗模式 > 撤离窗口 > 电量见底 > 背包接近满 > 变体默认。
  */
 
 import type { GameState } from "../types";
 import type { TurnResponse } from "../types";
+import type { RunConfigVariantId } from "./runConfig";
 import { BATTERY_MAX, BAG_CAPACITY } from "../constants";
 
 const BATTERY_LOW_THRESHOLD = 2;
 
-/** 当前局内状态推导出一条关注点（1 行短句）。 */
-export function getFocusHint(gameState: GameState, lastResponse: TurnResponse | null): string {
+/** 当前局内状态推导出一条关注点（1 行短句）。variantId 用于变体专属默认文案。 */
+export function getFocusHint(
+  gameState: GameState,
+  lastResponse: TurnResponse | null,
+  variantId?: RunConfigVariantId
+): string {
   const battery = gameState.battery ?? BATTERY_MAX;
   const bagCount = gameState.bag.length;
   const isDark = battery <= 0;
@@ -39,5 +44,11 @@ export function getFocusHint(gameState: GameState, lastResponse: TurnResponse | 
     return "关注：背包接近满格，准备取舍。";
   }
 
+  if (variantId === "night") {
+    return "关注：视野差，别把电量耗在空处。";
+  }
+  if (variantId === "battery_crisis") {
+    return "关注：电量更紧，能省就省。";
+  }
   return "关注：摸清方向，别把电量花在空处。";
 }

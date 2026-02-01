@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -k -n VITE,API -c auto \"npm run dev:vite\" \"npm run dev:api\"",
+    "dev:vite": "vite --host --port 3000",
+    "dev:api": "wrangler pages dev . --port 8788 --compatibility-date=2025-01-01",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -15,6 +17,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
+    "concurrently": "^9.0.0",
+    "wrangler": "^3.x",
     "@vitejs/plugin-react": "^5.0.0",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",

@@ -13,12 +13,12 @@ function itemValue(item: BagItem): number {
 }
 
 function isQuestLike(item: BagItem): boolean {
-  if (item?.isQuest === true) return true;
+  if (item?.tag === 'quest') return true;
   if (item?.name && String(item.name).includes("任务")) return true;
   return false;
 }
 
-/** 从背包中选出“保留一件”：优先任务物，否则最高价值；无 value 按 1。 */
+/** 从背包中选出“保留一件”：优先 tag==='quest'，否则 value 最大；无 value 按 1。 */
 export function pickKeptItem(bag: BagItem[]): BagItem | null {
   const filled = bag.filter(Boolean);
   if (filled.length === 0) return null;

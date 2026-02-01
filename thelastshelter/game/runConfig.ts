@@ -14,6 +14,10 @@ export interface RunConfig {
   variantId: RunConfigVariantId;
   ts: number;
   insurancePurchased?: boolean;
+  insuranceUsed?: boolean;
+  insuranceSlotIndex?: number;
+  /** 局前勾选的挑战 ID 列表，最多 3 条。 */
+  selectedContracts?: string[];
 }
 
 export const defaultRunConfig: RunConfig = {
@@ -22,6 +26,8 @@ export const defaultRunConfig: RunConfig = {
   variantId: "night",
   ts: 0,
   insurancePurchased: false,
+  insuranceUsed: false,
+  selectedContracts: [],
 };
 
 function isVariantId(v: unknown): v is RunConfigVariantId {
@@ -36,7 +42,12 @@ function parseRunConfig(raw: unknown): RunConfig {
   const variantId = isVariantId(o.variantId) ? o.variantId : defaultRunConfig.variantId;
   const ts = typeof o.ts === "number" && Number.isFinite(o.ts) ? o.ts : Date.now();
   const insurancePurchased = typeof o.insurancePurchased === "boolean" ? o.insurancePurchased : defaultRunConfig.insurancePurchased ?? false;
-  return { version, regionId, variantId, ts, insurancePurchased };
+  const insuranceUsed = typeof o.insuranceUsed === "boolean" ? o.insuranceUsed : defaultRunConfig.insuranceUsed ?? false;
+  const insuranceSlotIndex = typeof o.insuranceSlotIndex === "number" ? o.insuranceSlotIndex : undefined;
+  const selectedContracts = Array.isArray(o.selectedContracts)
+    ? (o.selectedContracts as string[]).filter((s) => typeof s === "string").slice(0, 3)
+    : defaultRunConfig.selectedContracts ?? [];
+  return { version, regionId, variantId, ts, insurancePurchased, insuranceUsed, insuranceSlotIndex, selectedContracts };
 }
 
 /** 从 localStorage 读取；解析失败或缺失时返回默认配置。 */

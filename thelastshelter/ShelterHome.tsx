@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { getRunConfig, setRunConfig, defaultRunConfig, type RunConfigVariantId } from "./game/runConfig";
+import { getRigLoadout, setRigLoadout, RIG_LOADOUT_LABELS, RIG_LOADOUT_HINTS, type RigLoadoutId } from "./game/rigLoadout";
+import { CONTRACT_IDS, CONTRACT_LABELS, type ContractId } from "./game/contracts";
 import { getSurvivalPoints, spendSurvivalPoints } from "./game/economy";
 import { INSURANCE_COST, APP_VERSION, TURN_ENDPOINT } from "./constants";
 import { createInitialState } from "./engine";
@@ -10,6 +12,7 @@ import {
   setDebugMode,
   type FeatureFlags,
 } from "./game/featureFlags";
+import { getTurnTraceRing, getQuickStatsFromTraces } from "./game/turnTrace";
 
 const VARIANT_LABELS: Record<RunConfigVariantId, string> = {
   night: "夜行",
@@ -24,6 +27,8 @@ function readInitialConfig() {
 const ShelterHome: React.FC = () => {
   const [regionId, setRegionId] = useState<string>(() => readInitialConfig().regionId);
   const [variantId, setVariantId] = useState<RunConfigVariantId>(() => readInitialConfig().variantId);
+  const [rigLoadout, setRigLoadoutState] = useState<RigLoadoutId>(() => getRigLoadout());
+  const [selectedContracts, setSelectedContracts] = useState<string[]>(() => readInitialConfig().selectedContracts ?? []);
   const [insuranceChecked, setInsuranceChecked] = useState(false);
   const [survivalPoints, setSurvivalPoints] = useState(0);
   const [connectionCheck, setConnectionCheck] = useState<"idle" | "checking" | "ok" | "fail">("idle");
@@ -36,6 +41,8 @@ const ShelterHome: React.FC = () => {
     const cfg = getRunConfig();
     setRegionId(cfg.regionId);
     setVariantId(cfg.variantId);
+    setRigLoadoutState(getRigLoadout());
+    setSelectedContracts(cfg.selectedContracts ?? []);
   }, []);
 
   useEffect(() => {
@@ -45,12 +52,22 @@ const ShelterHome: React.FC = () => {
   const handleStart = () => {
     if (insuranceChecked) {
       if (!spendSurvivalPoints(INSURANCE_COST)) return;
-      setRunConfig({ regionId, variantId, ts: Date.now(), insurancePurchased: true, insuranceUsed: false });
+      setRunConfig({ regionId, variantId, ts: Date.now(), insurancePurchased: true, insuranceUsed: false, selectedContracts });
     } else {
-      setRunConfig({ regionId, variantId, ts: Date.now(), insurancePurchased: false, insuranceUsed: false });
+      setRunConfig({ regionId, variantId, ts: Date.now(), insurancePurchased: false, insuranceUsed: false, selectedContracts });
     }
     setSurvivalPoints(getSurvivalPoints());
     window.location.hash = "#/run";
+  };
+
+  const toggleContract = (id: ContractId) => {
+    const next = selectedContracts.includes(id)
+      ? selectedContracts.filter((c) => c !== id)
+      : selectedContracts.length < 3
+        ? [...selectedContracts, id]
+        : selectedContracts;
+    setSelectedContracts(next);
+    setRunConfig({ selectedContracts: next });
   };
 
   const handleVersionClick = () => {
@@ -145,6 +162,34 @@ const ShelterHome: React.FC = () => {
 
         <div className="border border-gray-700 bg-[#111] p-5 rounded-sm shadow-xl">
           <h2 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-800 pb-2 mb-3">
+            Power Rig 配置
+          </h2>
+          <div className="space-y-2 mb-3">
+            {(["ENDURANCE", "SPARK"] as const).map((id) => (
+              <label key={id} className="flex items-start gap-2 cursor-pointer group">
+                <input
+                  type="radio"
+                  name="rigLoadout"
+                  checked={rigLoadout === id}
+                  onChange={() => {
+                    setRigLoadout(id);
+                    setRigLoadoutState(id);
+                  }}
+                  className="mt-1 w-4 h-4 border-gray-600 bg-gray-800 text-orange-500"
+                />
+                <div>
+                  <span className={rigLoadout === id ? "text-orange-400 font-medium" : "text-gray-300 group-hover:text-white"}>
+                    {RIG_LOADOUT_LABELS[id]}
+                  </span>
+                  <p className="text-xs text-gray-500 mt-0.5">{RIG_LOADOUT_HINTS[id]}</p>
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="border border-gray-700 bg-[#111] p-5 rounded-sm shadow-xl">
+          <h2 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-800 pb-2 mb-3">
             剧本变体
           </h2>
           <div className="grid grid-cols-2 gap-3">
@@ -167,6 +212,29 @@ const ShelterHome: React.FC = () => {
             ))}
           </div>
         </div>
+
+        {flags.contractsEnabled && (
+          <div className="border border-gray-700 bg-[#111] p-5 rounded-sm shadow-xl">
+            <h2 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-800 pb-2 mb-3">
+              挑战（可选）
+            </h2>
+            <p className="text-xs text-gray-500 mb-3">勾选 0–3 条，完成可在结算获得额外生存点。</p>
+            <div className="space-y-2">
+              {CONTRACT_IDS.map((id) => (
+                <label key={id} className="flex items-start gap-2 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={selectedContracts.includes(id)}
+                    onChange={() => toggleContract(id)}
+                    disabled={selectedContracts.length >= 3 && !selectedContracts.includes(id)}
+                    className="mt-1 w-4 h-4 rounded border-gray-600 bg-gray-800 text-orange-500 disabled:opacity-50"
+                  />
+                  <span className="text-sm text-gray-300 group-hover:text-white">{CONTRACT_LABELS[id]}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
 
         <button
           type="button"
@@ -222,6 +290,36 @@ const ShelterHome: React.FC = () => {
                 <span className="text-[10px] text-gray-400 group-hover:text-gray-300">{label}</span>
               </label>
             ))}
+            <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest border-t border-gray-800 pt-2 mt-2">
+              快速统计（最近20条）
+            </div>
+            {(() => {
+              const traces = getTurnTraceRing(20);
+              const stats = getQuickStatsFromTraces(traces);
+              const copyText = `版本: ${APP_VERSION}\n最近20条 TurnTrace:\n稀有机会 ${stats.rareLoot}\n孤注一掷 ${stats.gamble}\n条件撤离 ${stats.conditionalExtract}\n撤离压力提示 ${stats.extractPressure}\nfallback ${stats.fallback}\n总回合数 ${stats.total}`;
+              return (
+                <>
+                  <div className="text-[10px] text-gray-400 mt-1 space-y-0.5">
+                    <div>稀有机会 {stats.rareLoot} · 孤注一掷 {stats.gamble}</div>
+                    <div>条件撤离 {stats.conditionalExtract} · 撤离压力 {stats.extractPressure}</div>
+                    <div>fallback {stats.fallback} / {stats.total}</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="mt-2 w-full py-1 text-[10px] border border-gray-600 text-gray-400 hover:text-gray-300 hover:bg-gray-800 transition"
+                    onClick={() => {
+                      try {
+                        navigator.clipboard.writeText(copyText);
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                  >
+                    复制统计
+                  </button>
+                </>
+              );
+            })()}
           </div>
         )}
         <button

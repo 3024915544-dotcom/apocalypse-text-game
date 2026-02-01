@@ -7,6 +7,7 @@ import type { TurnResponse } from "../types";
 
 const TRACE_STORAGE_KEY = "m_apoc_turn_trace_v1";
 const TRACE_RING_MAX = 50;
+const QUICK_STATS_TAKE = 20;
 
 export interface TurnTrace {
   ts: number;
@@ -25,6 +26,8 @@ export interface TurnTrace {
   bagCountAfter: number;
   statusBefore: string;
   statusAfter: string;
+  /** 本回合生效的牌面类型（服务端 meta.cards） */
+  cards?: string[];
 }
 
 /** 尽量可靠地判定是否为兜底响应（不改后端）。优先明确字段，否则启发式。 */
@@ -70,4 +73,52 @@ export function logTurnTrace(trace: TurnTrace): void {
     }
   }
   pushToRing(trace);
+}
+
+/** 读取最近 N 条 trace（用于 Debug 快速统计）。 */
+export function getTurnTraceRing(take: number = QUICK_STATS_TAKE): TurnTrace[] {
+  try {
+    if (typeof localStorage === "undefined") return [];
+    const raw = localStorage.getItem(TRACE_STORAGE_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw) as TurnTrace[];
+    if (!Array.isArray(arr)) return [];
+    return arr.slice(-take);
+  } catch {
+    return [];
+  }
+}
+
+export interface QuickStats {
+  total: number;
+  rareLoot: number;
+  gamble: number;
+  conditionalExtract: number;
+  extractPressure: number;
+  fallback: number;
+}
+
+/** 从最近 N 条 trace 汇总牌面与 fallback 次数。 */
+export function getQuickStatsFromTraces(traces: TurnTrace[]): QuickStats {
+  let rareLoot = 0;
+  let gamble = 0;
+  let conditionalExtract = 0;
+  let extractPressure = 0;
+  let fallback = 0;
+  for (const t of traces) {
+    if (t.isFallback) fallback += 1;
+    const cards = t.cards ?? [];
+    if (cards.includes("RARE_LOOT")) rareLoot += 1;
+    if (cards.includes("GAMBLE")) gamble += 1;
+    if (cards.includes("CONDITIONAL_EXTRACT")) conditionalExtract += 1;
+    if (cards.includes("EXTRACT_PRESSURE")) extractPressure += 1;
+  }
+  return {
+    total: traces.length,
+    rareLoot,
+    gamble,
+    conditionalExtract,
+    extractPressure,
+    fallback,
+  };
 }

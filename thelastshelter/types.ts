@@ -32,8 +32,9 @@ export interface BagItem {
   id: string;
   name: string;
   type: 'FOOD' | 'WATER' | 'FUEL' | 'MED' | 'MISC';
-  value?: number;
-  isQuest?: boolean;
+  value: number;
+  tag?: 'quest' | 'loot';
+  rarity?: 'common' | 'rare' | 'epic';
 }
 
 export interface SceneBlock {
@@ -48,6 +49,8 @@ export interface Choice {
   risk: RiskLevel;
   preview_cost: ResourceDelta;
   action_type: ActionType;
+  /** 服务端牌面强制 badge（孤注一掷/稀有机会/条件撤离/更危险等） */
+  server_badge?: string;
 }
 
 export interface TurnResponse {
@@ -72,9 +75,12 @@ export interface TurnResponse {
   };
   memory_update: string;
   safety_fallback?: string;
+  /** 本回合生效的牌面类型（服务端注入） */
+  meta?: { cards?: string[] };
 }
 
 export interface GameState {
+  runId: string;
   hp: number;
   exposure: number;
   battery: number;

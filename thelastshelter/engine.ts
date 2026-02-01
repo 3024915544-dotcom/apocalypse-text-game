@@ -12,7 +12,10 @@ export function createInitialState(): GameState {
   const fog = new Array(GRID_SIZE * GRID_SIZE).fill(true);
   const grid_type = new Array(GRID_SIZE * GRID_SIZE).fill('EMPTY');
 
+  const runId = Date.now().toString() + "_" + Math.random().toString(16).slice(2);
+
   const state: GameState = {
+    runId,
     ...INITIAL_RESOURCES,
     battery: BATTERY_MAX,
     turn_index: 0,
@@ -68,17 +71,19 @@ export function applyAction(state: GameState, actionType: ActionType, suggestion
     nextState.logs.push(`你在瓦砾中翻找。`);
   }
 
-  // 1.5 Battery cost (引擎权威)：搜索类用搜索扣电，其它（含 SILENCE）默认按移动扣电；黑暗模式额外扣电；clamp 到 [0, BATTERY_MAX]
-  const prevBattery = nextState.battery ?? BATTERY_MAX;
-  const actionKey = String(actionType);
-  const isSearchLike = actionKey === 'SEARCH' || actionKey.startsWith('SEARCH_') || actionKey === 'LOOT' || actionKey === 'SCAN';
-  const inDark = prevBattery <= 0;
-  const cost = isSearchLike
-    ? BATTERY_COST_SEARCH + (inDark ? DARK_MODE_EXTRA_SEARCH : 0)
-    : BATTERY_COST_MOVE + (inDark ? DARK_MODE_EXTRA_MOVE : 0);
-  nextState.battery = Math.max(0, Math.min(BATTERY_MAX, prevBattery - cost));
-  if (prevBattery > 0 && nextState.battery <= 0) {
-    nextState.logs.push(`电量耗尽，进入黑暗模式。`);
+  // 1.5 Battery cost (引擎权威)：除 INIT 外每次 action 扣电；moveLike = MOVE_*，searchLike = SEARCH/SEARCH_*/LOOT/SCAN，其它当 moveLike；黑暗模式额外扣电；clamp [0, BATTERY_MAX]
+  if (actionType !== 'INIT') {
+    const prevBattery = nextState.battery ?? BATTERY_MAX;
+    const actionKey = String(actionType);
+    const isSearchLike = actionKey === 'SEARCH' || actionKey.startsWith('SEARCH_') || actionKey === 'LOOT' || actionKey === 'SCAN';
+    const inDark = prevBattery <= 0;
+    const cost = isSearchLike
+      ? BATTERY_COST_SEARCH + (inDark ? DARK_MODE_EXTRA_SEARCH : 0)
+      : BATTERY_COST_MOVE + (inDark ? DARK_MODE_EXTRA_MOVE : 0);
+    nextState.battery = Math.max(0, Math.min(BATTERY_MAX, prevBattery - cost));
+    if (prevBattery > 0 && nextState.battery <= 0) {
+      nextState.logs.push(`电量耗尽，进入黑暗模式。`);
+    }
   }
 
   // 2. Resource updates (Cost of action + Suggestion)

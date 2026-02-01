@@ -9,11 +9,29 @@ import { loadHintsSeen, markHintSeen, type TutorialHintKey } from './game/tutori
 import { getSurvivalPoints, addSurvivalPoints, computeRunPoints, getCurrentRunId, setCurrentRunId, isRunSettled, markRunSettled } from './game/economy';
 import { getRunConfig, setRunConfig } from './game/runConfig';
 import { pickKeptItem, setStoredKeptItem } from './game/insurance';
-import { loadContextFeed, pushContextFeed, clearContextFeed, compressOutcome, truncateSceneBlocks, formatDeltas, type TurnSummary } from './game/contextFeed';
+import { loadContextFeed, pushContextFeed, clearContextFeed, compressOutcome, truncateSceneBlocks, formatDeltas, sanitizeNarrative, type TurnSummary } from './game/contextFeed';
 import { getTensionLabel, getTensionHintForTurn } from './game/tension';
 import { getFocusHint } from './game/focusHint';
 import { diagnoseLoss } from './game/lossDiagnosis';
-import { getRewardItemForWindow, isInRewardWindow, markWindowTriggered, clearRewardMoments } from './game/rewardMoments';
+import { getRewardItemForWindow, isInRewardWindow, isWindowTriggered, markWindowTriggered, clearRewardMoments } from './game/rewardMoments';
+import { shouldShowGamble, getGambleChoice, isGambleChoice, isGambleTriggered, resolveGamble, setGambleTriggered, clearGambleMoments } from './game/gambleMoment';
+import { getChoiceBadge } from './game/choiceBadge';
+import { bagHasFuse, isConditionalExtractUsed, getConditionalExtractChoice, isConditionalExtractChoice, resolveConditionalExtract, setConditionalExtractUsed, clearConditionalExtract } from './game/conditionalExtract';
+import { getRunHighlights, getCarriedList, getSettlementValueHighlights } from './game/runHighlights';
+import { getRunRegret } from './game/runRegrets';
+import { getItemPurpose, getItemTier } from './game/itemsCatalog';
+import { evaluateTurnValue, TURN_VALUE_LABELS } from './game/turnValue';
+import { addCarriedToMaterialInventory, getMaterialInventory, getNextRigGoal, getCurrentRigLevel, fillGoalWithInventory } from './game/progression';
+import { getRigLoadout, RIG_LOADOUT_LABELS } from './game/rigLoadout';
+import { isSparkUsed, setSparkUsed, buildSparkSummary } from './game/emergencySpark';
+import {
+  getContractBonus,
+  getContractProgress,
+  CONTRACT_LABELS,
+  CONTRACT_REWARD_POINTS,
+  getCompletedContractIds,
+  type ContractId,
+} from './game/contracts';
 import ShelterHome from './ShelterHome';
 
 type LogbookEntry = {
@@ -84,6 +102,11 @@ function RunScreen() {
   const recapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [tensionHint, setTensionHint] = useState<string | null>(null);
   const tensionHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [variantStyleHint, setVariantStyleHint] = useState<string | null>(null);
+  const variantStyleHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [extractPressureHint, setExtractPressureHint] = useState<string | null>(null);
+  const extractPressureHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const extractPressureHintShownRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasCreditedRef = useRef(false);
   const hasInitializedRef = useRef(false);
@@ -95,6 +118,8 @@ function RunScreen() {
   const [activeHint, setActiveHint] = useState<{ key: TutorialHintKey; text: string } | null>(null);
   const batteryHintShownRef = useRef(loadHintsSeen().BAT_LOW === true);
   const extractHintShownRef = useRef(loadHintsSeen().EXTRACT_CHOICES === true);
+  const extractPressureCardUsedRef = useRef(false);
+  const [contractsPanelOpen, setContractsPanelOpen] = useState(false);
 
   useEffect(() => {
     setCurrentRunId(gameState.runId);
@@ -109,6 +134,14 @@ function RunScreen() {
       if (tensionHintTimerRef.current) {
         clearTimeout(tensionHintTimerRef.current);
         tensionHintTimerRef.current = null;
+      }
+      if (variantStyleHintTimerRef.current) {
+        clearTimeout(variantStyleHintTimerRef.current);
+        variantStyleHintTimerRef.current = null;
+      }
+      if (extractPressureHintTimerRef.current) {
+        clearTimeout(extractPressureHintTimerRef.current);
+        extractPressureHintTimerRef.current = null;
       }
     };
   }, []);
@@ -128,6 +161,38 @@ function RunScreen() {
       }
     };
   }, [tensionHint]);
+
+  /** 变体风格提示 4 秒后消失。 */
+  useEffect(() => {
+    if (!variantStyleHint) return;
+    if (variantStyleHintTimerRef.current) clearTimeout(variantStyleHintTimerRef.current);
+    variantStyleHintTimerRef.current = setTimeout(() => {
+      variantStyleHintTimerRef.current = null;
+      setVariantStyleHint(null);
+    }, 4000);
+    return () => {
+      if (variantStyleHintTimerRef.current) {
+        clearTimeout(variantStyleHintTimerRef.current);
+        variantStyleHintTimerRef.current = null;
+      }
+    };
+  }, [variantStyleHint]);
+
+  /** 撤离压力提示 5 秒后消失。 */
+  useEffect(() => {
+    if (!extractPressureHint) return;
+    if (extractPressureHintTimerRef.current) clearTimeout(extractPressureHintTimerRef.current);
+    extractPressureHintTimerRef.current = setTimeout(() => {
+      extractPressureHintTimerRef.current = null;
+      setExtractPressureHint(null);
+    }, 5000);
+    return () => {
+      if (extractPressureHintTimerRef.current) {
+        clearTimeout(extractPressureHintTimerRef.current);
+        extractPressureHintTimerRef.current = null;
+      }
+    };
+  }, [extractPressureHint]);
 
   /** 仅局内且未初始化过时自动 INIT；结算/非 PLAYING、已失败 INIT 或刷新恢复的失败态不自动发。 */
   useEffect(() => {
@@ -182,6 +247,15 @@ function RunScreen() {
     setActiveHint({ key: 'EXTRACT_CHOICES', text: '撤离有两种：近撤离要停住片刻更危险；远撤离更耗电但更稳。' });
   }, [lastResponse?.choices, featureFlags.tutorialHintsEnabled]);
 
+  /** 撤离窗口首次出现时主屏插入一次系统提示（每局最多一次）。 */
+  useEffect(() => {
+    const choices = lastResponse?.choices ?? [];
+    const hasExtract = choices.some((c) => c.label && (c.label.includes('撤离-近') || c.label.includes('撤离-远')));
+    if (!hasExtract || extractPressureHintShownRef.current) return;
+    extractPressureHintShownRef.current = true;
+    setExtractPressureHint("撤离窗口出现了。再拖，代价只会更高。");
+  }, [lastResponse?.choices]);
+
   /** 提示条自动消失（8 秒）。 */
   useEffect(() => {
     if (!activeHint) return;
@@ -196,18 +270,22 @@ function RunScreen() {
   useEffect(() => {
     if (gameState.status === 'PLAYING') return;
     if (hasCreditedRef.current) return;
+    const runConfig = getRunConfig();
+    const selectedContracts = runConfig.selectedContracts ?? [];
+    const contractBonus = getContractBonus(gameState, contextFeed, selectedContracts);
     if (isRunSettled(gameState.runId)) {
       hasCreditedRef.current = true;
-      const points = computeRunPoints(gameState);
-      setSettlementRunPoints(points);
+      const basePoints = computeRunPoints(gameState);
+      setSettlementRunPoints(basePoints + contractBonus);
       return;
     }
     hasCreditedRef.current = true;
-    const runConfig = getRunConfig();
     let points: number;
+    let carriedBag: { name: string }[] = [];
     if (gameState.status === 'LOSS') {
       if (runConfig.insurancePurchased === true && runConfig.insuranceUsed !== true) {
         const keptItem = pickKeptItem(gameState.bag);
+        carriedBag = keptItem ? [keptItem] : [];
         setGameState(prev => ({ ...prev, bag: keptItem ? [keptItem] : [] }));
         setRunConfig({ insuranceUsed: true });
         if (keptItem) {
@@ -227,13 +305,16 @@ function RunScreen() {
         points = computeRunPoints(gameState);
       }
     } else {
+      carriedBag = gameState.bag;
       points = computeRunPoints(gameState);
       setInsuranceSettlementMessage(null);
     }
-    addSurvivalPoints(points);
+    const totalPoints = points + contractBonus;
+    addSurvivalPoints(totalPoints);
+    addCarriedToMaterialInventory(carriedBag);
     markRunSettled(gameState.runId);
-    setSettlementRunPoints(points);
-  }, [gameState.status]);
+    setSettlementRunPoints(totalPoints);
+  }, [gameState.status, contextFeed]);
 
   /** 通信失败时使用的 fallback，保证回合推进与扣电；choices 使用真实 ActionType。 */
   const buildFallbackResponse = (): TurnResponse => ({
@@ -273,8 +354,17 @@ function RunScreen() {
     const hpBefore = snapshotState.hp ?? null;
     const bagCountBefore = snapshotState.bag.length;
     const statusBefore = snapshotState.status;
+    const stateWithCards = {
+      ...snapshotState,
+      cards_used: {
+        gamble: isGambleTriggered(runId),
+        rare_loot: isWindowTriggered(runId, 'w1') || isWindowTriggered(runId, 'w2'),
+        conditional_extract_used: isConditionalExtractUsed(runId),
+        extract_pressure: extractPressureCardUsedRef.current,
+      },
+    };
     try {
-      const response = await fetchTurnResponse(snapshotState, action, meta);
+      const response = await fetchTurnResponse(stateWithCards, action, meta);
       const respTurnIndex = response.ui?.progress?.turn_index;
       if (respTurnIndex != null) {
         const expectedNext = clientTurnIndex + 1;
@@ -305,10 +395,51 @@ function RunScreen() {
       } catch {
         /* ignore */
       }
+      let effectiveBatAfter: number | null = snapshotState.battery ?? null;
+      let effectiveStatusAfter = snapshotState.status;
       if (action !== 'INIT') {
-        setGameState(prev => applyAction(prev, action, {} as Parameters<typeof applyAction>[2]));
+        const nextState = applyAction(gameState, action, {} as Parameters<typeof applyAction>[2]);
+        let stateToSet = nextState;
+        if (nextState.battery <= 0 && getRigLoadout() === 'SPARK' && !isSparkUsed(runId)) {
+          stateToSet = { ...nextState, battery: 1 };
+          setSparkUsed(runId);
+          effectiveBatAfter = 1;
+          effectiveStatusAfter = stateToSet.status;
+          const sparkSummary = buildSparkSummary(snapshotState.turn_index, snapshotState.battery ?? 0);
+          setContextFeed(pushContextFeed(sparkSummary));
+          if (recapTimerRef.current) {
+            clearTimeout(recapTimerRef.current);
+            recapTimerRef.current = null;
+          }
+          setActiveRecap(sparkSummary);
+          recapTimerRef.current = setTimeout(() => {
+            recapTimerRef.current = null;
+            setActiveRecap(null);
+          }, 8000);
+          if (loadFeatureFlags().turnTraceEnabled) {
+            logTurnTrace({
+              ts: Date.now(),
+              runId,
+              clientTurnIndex: snapshotState.turn_index,
+              action: 'SPARK_AUTO',
+              ok: true,
+              batBefore: snapshotState.battery ?? null,
+              batAfter: 1,
+              hpBefore: snapshotState.hp ?? null,
+              hpAfter: stateToSet.hp ?? null,
+              bagCountBefore: snapshotState.bag.length,
+              bagCountAfter: snapshotState.bag.length,
+              statusBefore: snapshotState.status,
+              statusAfter: stateToSet.status,
+            });
+          }
+        }
+        setGameState(stateToSet);
       }
       setLastResponse(response);
+      const choices = response.choices ?? [];
+      const hadExtract = choices.some((c) => c.label && (c.label.includes('撤离-近') || c.label.includes('撤离-远')));
+      if (hadExtract) extractPressureCardUsedRef.current = true;
       const addCount = response.ui?.bag_delta?.add?.length ?? 0;
       const removeCount = response.ui?.bag_delta?.remove?.length ?? 0;
       const bagCountAfter = snapshotState.bag.length + addCount - removeCount;
@@ -321,13 +452,14 @@ function RunScreen() {
           ok: true,
           isFallback: detectFallback(response),
           batBefore,
-          batAfter: snapshotState.battery ?? null,
+          batAfter: effectiveBatAfter,
           hpBefore,
           hpAfter: snapshotState.hp ?? null,
           bagCountBefore,
           bagCountAfter,
           statusBefore,
-          statusAfter: snapshotState.status,
+          cards: response.meta?.cards,
+          statusAfter: effectiveStatusAfter,
         });
       }
       const turnIdx = snapshotState.turn_index;
@@ -337,10 +469,10 @@ function RunScreen() {
         action,
         timestamp: Date.now(),
         scene_blocks: response.scene_blocks ?? [],
-        battery: snapshotState.battery,
+        battery: effectiveBatAfter ?? snapshotState.battery,
         hp: snapshotState.hp,
         exposure: snapshotState.exposure,
-        status: snapshotState.status,
+        status: effectiveStatusAfter,
       };
       setLogbook(prev => [...prev, logEntry]);
       setLogbookOpenSet(prev => ({
@@ -384,6 +516,9 @@ function RunScreen() {
         bagCountAfter: bagCountAfterReal,
         statusBefore,
         decisionLabel: lastChoiceLabel ?? actionLabel(action),
+        variantId: runConfig.variantId,
+        adds,
+        activeCards: response.meta?.cards,
       });
       const tensionHintMsg = getTensionHintForTurn(nextTurnIndex);
       if (tensionHintMsg) setTensionHint(tensionHintMsg);
@@ -455,8 +590,17 @@ function RunScreen() {
     const hpBefore = snapshotState.hp ?? null;
     const bagCountBefore = snapshotState.bag.length;
     const statusBefore = snapshotState.status;
+    const stateWithCards = {
+      ...snapshotState,
+      cards_used: {
+        gamble: isGambleTriggered(runId),
+        rare_loot: isWindowTriggered(runId, 'w1') || isWindowTriggered(runId, 'w2'),
+        conditional_extract_used: isConditionalExtractUsed(runId),
+        extract_pressure: extractPressureCardUsedRef.current,
+      },
+    };
     try {
-      const response = await fetchTurnResponse(snapshotState, action, meta);
+      const response = await fetchTurnResponse(stateWithCards, action, meta);
       const respTurnIndex = response.ui?.progress?.turn_index;
       if (respTurnIndex != null) {
         const expectedNext = clientTurnIndex + 1;
@@ -489,10 +633,51 @@ function RunScreen() {
       } catch {
         /* ignore */
       }
+      let effectiveBatAfterRetry: number | null = snapshotState.battery ?? null;
+      let effectiveStatusAfterRetry = snapshotState.status;
       if (action !== 'INIT') {
-        setGameState(prev => applyAction(prev, action, {} as Parameters<typeof applyAction>[2]));
+        const nextStateRetry = applyAction(snapshotState, action, {} as Parameters<typeof applyAction>[2]);
+        let stateToSetRetry = nextStateRetry;
+        if (nextStateRetry.battery <= 0 && getRigLoadout() === 'SPARK' && !isSparkUsed(runId)) {
+          stateToSetRetry = { ...nextStateRetry, battery: 1 };
+          setSparkUsed(runId);
+          effectiveBatAfterRetry = 1;
+          effectiveStatusAfterRetry = stateToSetRetry.status;
+          const sparkSummaryRetry = buildSparkSummary(snapshotState.turn_index, snapshotState.battery ?? 0);
+          setContextFeed(pushContextFeed(sparkSummaryRetry));
+          if (recapTimerRef.current) {
+            clearTimeout(recapTimerRef.current);
+            recapTimerRef.current = null;
+          }
+          setActiveRecap(sparkSummaryRetry);
+          recapTimerRef.current = setTimeout(() => {
+            recapTimerRef.current = null;
+            setActiveRecap(null);
+          }, 8000);
+          if (loadFeatureFlags().turnTraceEnabled) {
+            logTurnTrace({
+              ts: Date.now(),
+              runId,
+              clientTurnIndex: snapshotState.turn_index,
+              action: 'SPARK_AUTO',
+              ok: true,
+              batBefore: snapshotState.battery ?? null,
+              batAfter: 1,
+              hpBefore: snapshotState.hp ?? null,
+              hpAfter: stateToSetRetry.hp ?? null,
+              bagCountBefore: snapshotState.bag.length,
+              bagCountAfter: snapshotState.bag.length,
+              statusBefore: snapshotState.status,
+              statusAfter: stateToSetRetry.status,
+            });
+          }
+        }
+        setGameState(stateToSetRetry);
       }
       setLastResponse(response);
+      const choicesRetry = response.choices ?? [];
+      const hadExtractRetry = choicesRetry.some((c) => c.label && (c.label.includes('撤离-近') || c.label.includes('撤离-远')));
+      if (hadExtractRetry) extractPressureCardUsedRef.current = true;
       const addCount = response.ui?.bag_delta?.add?.length ?? 0;
       const removeCount = response.ui?.bag_delta?.remove?.length ?? 0;
       const bagCountAfter = snapshotState.bag.length + addCount - removeCount;
@@ -505,13 +690,14 @@ function RunScreen() {
           ok: true,
           isFallback: detectFallback(response),
           batBefore,
-          batAfter: snapshotState.battery ?? null,
+          batAfter: effectiveBatAfterRetry,
           hpBefore,
           hpAfter: snapshotState.hp ?? null,
           bagCountBefore,
           bagCountAfter,
           statusBefore,
-          statusAfter: snapshotState.status,
+          statusAfter: effectiveStatusAfterRetry,
+          cards: response.meta?.cards,
         });
       }
       const turnIdx = snapshotState.turn_index;
@@ -521,10 +707,10 @@ function RunScreen() {
         action,
         timestamp: Date.now(),
         scene_blocks: response.scene_blocks ?? [],
-        battery: snapshotState.battery,
+        battery: effectiveBatAfterRetry ?? snapshotState.battery,
         hp: snapshotState.hp,
         exposure: snapshotState.exposure,
-        status: snapshotState.status,
+        status: effectiveStatusAfterRetry,
       };
       setLogbook(prev => [...prev, logEntry]);
       setLogbookOpenSet(prev => ({
@@ -568,6 +754,9 @@ function RunScreen() {
         bagCountAfter: bagCountAfterRealRetry,
         statusBefore,
         decisionLabel: actionLabel(action),
+        variantId: runConfigRetry.variantId,
+        adds,
+        activeCards: response.meta?.cards,
       });
       const tensionHintMsg = getTensionHintForTurn(nextTurnIndex);
       if (tensionHintMsg) setTensionHint(tensionHintMsg);
@@ -641,6 +830,8 @@ function RunScreen() {
     clearContextFeed();
     setContextFeed([]);
     clearRewardMoments();
+    clearGambleMoments();
+    clearConditionalExtract();
     if (recapTimerRef.current) {
       clearTimeout(recapTimerRef.current);
       recapTimerRef.current = null;
@@ -651,6 +842,9 @@ function RunScreen() {
     }
     setActiveRecap(null);
     setTensionHint(null);
+    setVariantStyleHint(null);
+    setExtractPressureHint(null);
+    extractPressureHintShownRef.current = false;
     const newState = createInitialState();
     setCurrentRunId(newState.runId);
     setGameState(newState);
@@ -673,8 +867,11 @@ function RunScreen() {
     bagCountAfter: number;
     statusBefore: GameState['status'];
     decisionLabel: string;
+    variantId?: import('./game/runConfig').RunConfigVariantId;
+    adds?: BagItem[];
+    activeCards?: string[];
   }) => {
-    const { snapshotState, action, response, bagCountBefore, bagCountAfter, statusBefore, decisionLabel } = params;
+    const { snapshotState, action, response, bagCountBefore, bagCountAfter, statusBefore, decisionLabel, variantId, adds = [], activeCards } = params;
     const turnIdx = snapshotState.turn_index;
     const nextState = action !== 'INIT' ? applyAction(snapshotState, action, {} as Parameters<typeof applyAction>[2]) : snapshotState;
     const batBefore = snapshotState.battery ?? null;
@@ -684,6 +881,10 @@ function RunScreen() {
     const statusAfter = nextState.status;
     const firstBlock = response.scene_blocks?.[0];
     const outcomeText = compressOutcome(firstBlock?.content);
+    const choices = response.choices ?? [];
+    const hadExtract = choices.some((c) => c.label && (c.label.includes('撤离-近') || c.label.includes('撤离-远')));
+    const choseNonExtract = hadExtract && !decisionLabel.includes('撤离-近') && !decisionLabel.includes('撤离-远');
+    const addedValueItem = variantId === 'battery_crisis' && adds.some((a) => /电池|保险丝|导线/.test(a.name));
     const summary: TurnSummary = {
       id: `cf-${turnIdx}-${Date.now()}`,
       turn: turnIdx,
@@ -700,6 +901,10 @@ function RunScreen() {
       sceneBlocks: truncateSceneBlocks(response.scene_blocks),
       isFallback: detectFallback(response),
       enteredDarkMode: batAfter != null && batAfter <= 0,
+      addedValueItem: addedValueItem || undefined,
+      choseNonExtractWhenExtractAvailable: choseNonExtract || undefined,
+      gainedItemNames: adds.length ? adds.map((a) => a.name) : undefined,
+      activeCards: activeCards?.length ? activeCards : undefined,
     };
     if (recapTimerRef.current) {
       clearTimeout(recapTimerRef.current);
@@ -711,6 +916,120 @@ function RunScreen() {
       recapTimerRef.current = null;
       setActiveRecap(null);
     }, 8000);
+    if (variantId === "night" && batAfter != null && batAfter <= 2) {
+      setVariantStyleHint("夜更深了。你能看清的东西越来越少。");
+    } else if (variantId === "battery_crisis" && batBefore != null && batAfter != null && batAfter < batBefore) {
+      setVariantStyleHint("电量像漏水一样，省下来的才算赚到。");
+    }
+  };
+
+  /** 赌感窗口：本地 resolve，不请求 /api/turn；保持 inFlight 与 trace 一致。 */
+  const runGambleTurn = () => {
+    if (turnInFlight || !lastResponse || gameState.status !== 'PLAYING') return;
+    setTurnInFlight(true);
+    const snapshotState = gameState;
+    const result = resolveGamble(snapshotState);
+    setGambleTriggered(snapshotState.runId);
+    setGameState(result.nextState);
+    setContextFeed(pushContextFeed(result.summary));
+    if (recapTimerRef.current) {
+      clearTimeout(recapTimerRef.current);
+      recapTimerRef.current = null;
+    }
+    setActiveRecap(result.summary);
+    recapTimerRef.current = setTimeout(() => {
+      recapTimerRef.current = null;
+      setActiveRecap(null);
+    }, 8000);
+    setLastResponse({ ...lastResponse, scene_blocks: result.sceneBlocks, choices: lastResponse.choices });
+    setLastChoiceLabel('摸黑翻进去（赌一把）');
+    setLastActionType('SEARCH');
+    const logEntry: LogbookEntry = {
+      id: `gamble-${snapshotState.turn_index}-${Date.now()}`,
+      turn: snapshotState.turn_index,
+      action: 'SEARCH',
+      timestamp: Date.now(),
+      scene_blocks: result.sceneBlocks,
+      battery: result.nextState.battery,
+      hp: result.nextState.hp,
+      exposure: result.nextState.exposure,
+      status: result.nextState.status,
+    };
+    setLogbook(prev => [...prev, logEntry]);
+    setLogbookOpenSet(prev => ({ ...prev, [snapshotState.turn_index]: true }));
+    if (loadFeatureFlags().turnTraceEnabled) {
+      logTurnTrace({
+        ts: Date.now(),
+        runId: snapshotState.runId,
+        clientTurnIndex: snapshotState.turn_index,
+        action: 'GAMBLE_LOCAL',
+        ok: true,
+        batBefore: snapshotState.battery ?? null,
+        batAfter: result.nextState.battery ?? null,
+        hpBefore: snapshotState.hp ?? null,
+        hpAfter: result.nextState.hp ?? null,
+        bagCountBefore: snapshotState.bag.length,
+        bagCountAfter: result.nextState.bag.length,
+        statusBefore: snapshotState.status,
+        statusAfter: result.nextState.status,
+      });
+    }
+    setTurnInFlight(false);
+  };
+
+  /** 条件撤离：本地 resolve，消耗 1 保险丝，立即 WIN；保持 inFlight 与 trace。 */
+  const runConditionalExtractTurn = () => {
+    if (turnInFlight || !lastResponse || gameState.status !== 'PLAYING') return;
+    const result = resolveConditionalExtract(gameState);
+    if (!result) return;
+    setTurnInFlight(true);
+    const snapshotState = gameState;
+    setConditionalExtractUsed(snapshotState.runId);
+    setGameState(result.nextState);
+    setContextFeed(pushContextFeed(result.summary));
+    if (recapTimerRef.current) {
+      clearTimeout(recapTimerRef.current);
+      recapTimerRef.current = null;
+    }
+    setActiveRecap(result.summary);
+    recapTimerRef.current = setTimeout(() => {
+      recapTimerRef.current = null;
+      setActiveRecap(null);
+    }, 8000);
+    setLastResponse({ ...lastResponse, scene_blocks: result.sceneBlocks, choices: [] });
+    setLastChoiceLabel('《条件撤离》');
+    setLastActionType('SEARCH');
+    const logEntry: LogbookEntry = {
+      id: `cond-${snapshotState.turn_index}-${Date.now()}`,
+      turn: snapshotState.turn_index,
+      action: 'SEARCH',
+      timestamp: Date.now(),
+      scene_blocks: result.sceneBlocks,
+      battery: result.nextState.battery,
+      hp: result.nextState.hp,
+      exposure: result.nextState.exposure,
+      status: result.nextState.status,
+    };
+    setLogbook(prev => [...prev, logEntry]);
+    setLogbookOpenSet(prev => ({ ...prev, [snapshotState.turn_index]: true }));
+    if (loadFeatureFlags().turnTraceEnabled) {
+      logTurnTrace({
+        ts: Date.now(),
+        runId: snapshotState.runId,
+        clientTurnIndex: snapshotState.turn_index,
+        action: 'CONDITIONAL_EXTRACT_LOCAL',
+        ok: true,
+        batBefore: snapshotState.battery ?? null,
+        batAfter: result.nextState.battery ?? null,
+        hpBefore: snapshotState.hp ?? null,
+        hpAfter: result.nextState.hp ?? null,
+        bagCountBefore: snapshotState.bag.length,
+        bagCountAfter: result.nextState.bag.length,
+        statusBefore: snapshotState.status,
+        statusAfter: result.nextState.status,
+      });
+    }
+    setTurnInFlight(false);
   };
 
   const restartGame = () => {
@@ -725,6 +1044,8 @@ function RunScreen() {
     clearContextFeed();
     setContextFeed([]);
     clearRewardMoments();
+    clearGambleMoments();
+    clearConditionalExtract();
     if (recapTimerRef.current) {
       clearTimeout(recapTimerRef.current);
       recapTimerRef.current = null;
@@ -735,6 +1056,10 @@ function RunScreen() {
     }
     setActiveRecap(null);
     setTensionHint(null);
+    setVariantStyleHint(null);
+    setExtractPressureHint(null);
+    extractPressureHintShownRef.current = false;
+    extractPressureCardUsedRef.current = false;
     const newState = createInitialState();
     setCurrentRunId(newState.runId);
     setGameState(newState);
@@ -817,29 +1142,33 @@ function RunScreen() {
       <div className="flex flex-col mb-4 relative z-10">
         <div className="flex justify-between items-end mb-2">
           <h1 className="text-xl md:text-2xl font-bold italic text-white font-['Playfair_Display']">THE LAST SHELTER <span className="text-xs font-mono text-gray-500 uppercase not-italic tracking-tighter ml-2">CH-01: THE COLD VOID</span></h1>
-          <div className="flex flex-wrap items-center gap-3 text-xs">
-             <div className="flex items-center gap-1">
-               <span className="text-gray-500">HP</span>
-               <div className="w-16 md:w-24 h-2 bg-gray-800 rounded-full overflow-hidden">
+          <div className="flex flex-wrap items-center gap-2 md:gap-3 text-xs min-w-0 max-w-[60%] md:max-w-none">
+             <div className="flex items-center gap-1.5 shrink-0">
+               <span className="text-[12px] text-gray-400">生命</span>
+               <div className="w-14 md:w-20 h-2 bg-gray-800 rounded-full overflow-hidden min-w-[56px]">
                  <div className="h-full bg-red-600 transition-all duration-500" style={{ width: `${gameState.hp}%` }}></div>
                </div>
              </div>
-             <div className="flex items-center gap-1">
-               <span className="text-gray-500">EXPO</span>
-               <div className="w-16 md:w-24 h-2 bg-gray-800 rounded-full overflow-hidden">
-                 <div className="h-full bg-yellow-500 transition-all duration-500" style={{ width: `${gameState.exposure}%` }}></div>
-               </div>
-             </div>
-             <div className="flex items-center gap-1">
-               <span className="text-gray-500">电量</span>
-               <div className="w-16 md:w-24 h-2 bg-gray-800 rounded-full overflow-hidden">
+             <div className="flex items-center gap-1.5 shrink-0">
+               <span className="text-[12px] text-gray-400">电量</span>
+               <div className="w-14 md:w-20 h-2 bg-gray-800 rounded-full overflow-hidden min-w-[56px]">
                  <div className="h-full bg-blue-500 transition-all duration-500" style={{ width: `${Math.max(0, Math.min(100, (gameState.battery ?? BATTERY_MAX) / BATTERY_MAX * 100))}%` }}></div>
                </div>
-               <span className="text-[10px] font-mono text-gray-400 tabular-nums">{gameState.battery ?? BATTERY_MAX}/{BATTERY_MAX}</span>
+               <span className="text-[12px] font-mono text-gray-500 tabular-nums">{gameState.battery ?? BATTERY_MAX}/{BATTERY_MAX}</span>
              </div>
-             {(gameState.battery ?? BATTERY_MAX) <= 0 && (
-               <span className="px-2 py-0.5 text-[10px] font-bold text-red-500 border border-red-700 bg-black/60">黑暗模式</span>
-             )}
+             <div className="flex flex-wrap items-center gap-1.5">
+               {(gameState.battery ?? BATTERY_MAX) <= 0 && (
+                 <span className="px-2 py-0.5 text-[12px] font-semibold text-red-500 border border-red-700 bg-black/60 rounded">黑暗模式</span>
+               )}
+               {(lastResponse?.choices ?? []).some((c) => c.label && (c.label.includes('撤离-近') || c.label.includes('撤离-远'))) && (
+                 <span className="px-2 py-0.5 text-[12px] font-medium text-amber-400/95 border border-amber-600/50 bg-black/40 rounded">可撤离</span>
+               )}
+               {getRigLoadout() === 'SPARK' && (
+                 isSparkUsed(gameState.runId)
+                   ? <span className="px-2 py-0.5 text-[11px] text-gray-500 border border-gray-700 bg-black/30 rounded">火花已耗尽</span>
+                   : <span className="px-2 py-0.5 text-[12px] font-medium text-amber-200/90 border border-amber-600/40 bg-black/40 rounded">应急火花</span>
+               )}
+             </div>
              {import.meta.env.DEV && (
                <div className="text-[10px] text-gray-500">
                  步数：{gameState.turn_index} · action={String(lastActionType)} · 电量={gameState.battery}
@@ -895,8 +1224,8 @@ function RunScreen() {
           <div className="w-[260px] shrink-0 h-full flex flex-col hidden md:flex">
             <div className="bg-[#111] p-3 border border-gray-800 h-full flex flex-col">
               <div className="flex justify-between items-center mb-2 text-[10px] font-bold text-gray-400">
-                <span>MAP.VIEWER</span>
-                <span>({gameState.player_pos.x}, {gameState.player_pos.y})</span>
+                <span>地图</span>
+                <span>坐标（{gameState.player_pos.x}, {gameState.player_pos.y}）</span>
               </div>
               <div className="flex-1 grid grid-cols-9 grid-rows-9 gap-px bg-gray-800 min-h-0">
                 {Array.from({ length: GRID_SIZE * GRID_SIZE }).map((_, i) => {
@@ -919,8 +1248,8 @@ function RunScreen() {
                 })}
               </div>
               <div className="mt-2 text-[8px] text-gray-600 flex justify-between uppercase">
-                <span>Sensor Signal: Nominal</span>
-                <span className="text-orange-900 animate-pulse">Radar Offline</span>
+                <span>信号正常</span>
+                <span className="text-orange-900 animate-pulse">雷达离线</span>
               </div>
             </div>
           </div>
@@ -929,8 +1258,20 @@ function RunScreen() {
           <div className="p-2 md:p-3 border-b border-gray-800 flex flex-wrap items-center justify-between gap-2 text-[10px] bg-[#0d0d0d] shrink-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-orange-500 font-medium">冷寂街区</span>
+              <span className="text-zinc-600">
+                变体：{getRunConfig().variantId === 'night' ? '夜行' : getRunConfig().variantId === 'battery_crisis' ? '电量危机' : '—'}
+              </span>
+              <span className="text-zinc-600">
+                装备：{RIG_LOADOUT_LABELS[getRigLoadout()]}
+                {getRigLoadout() === 'SPARK' && isSparkUsed(gameState.runId) && (
+                  <span className="text-amber-500/80 ml-0.5">· 火花已耗尽</span>
+                )}
+              </span>
               <span className="text-gray-500">
                 局势：{getTensionLabel(gameState.turn_index)}
+                {(lastResponse?.choices ?? []).some((c) => c.label && (c.label.includes('撤离-近') || c.label.includes('撤离-远'))) && (
+                  <span className="text-amber-400/90 ml-0.5">· 撤离窗口</span>
+                )}
                 {turnInFlight ? (
                   <span className="animate-pulse text-blue-400 italic ml-1">· 处理中…</span>
                 ) : (
@@ -950,7 +1291,7 @@ function RunScreen() {
                 className="md:hidden px-2 py-1.5 border border-gray-600 text-gray-400 hover:bg-gray-800 transition text-[10px]"
                 onClick={() => setIsRightDrawerOpen(true)}
               >
-                状态/背包
+                背包/状态
               </button>
               <button
                 type="button"
@@ -962,8 +1303,18 @@ function RunScreen() {
             </div>
           </div>
           <div className="shrink-0 px-3 md:px-4 py-1.5 pointer-events-none border-b border-white/5" aria-live="polite">
-            <p className="max-w-[860px] mx-auto text-[11px] text-zinc-500/90">{getFocusHint(gameState, lastResponse)}</p>
+            <p className="max-w-[860px] mx-auto text-[11px] text-zinc-500/90">{getFocusHint(gameState, lastResponse, getRunConfig().variantId)}</p>
           </div>
+          {extractPressureHint && (
+            <div className="shrink-0 px-3 md:px-4 py-1.5 pointer-events-none" aria-live="polite">
+              <p className="max-w-[860px] mx-auto text-[11px] text-amber-200/90">{extractPressureHint}</p>
+            </div>
+          )}
+          {variantStyleHint && (
+            <div className="shrink-0 px-3 md:px-4 py-1.5 pointer-events-none" aria-live="polite">
+              <p className="max-w-[860px] mx-auto text-[11px] text-zinc-400/90 italic">{variantStyleHint}</p>
+            </div>
+          )}
           {featureFlags.tutorialHintsEnabled && activeHint && (
             <div className="px-3 py-2 bg-amber-950/50 border-b border-amber-900/50 flex items-center justify-between gap-2 text-[10px] text-amber-200 shrink-0">
               <span className="flex-1 min-w-0">{activeHint.text}</span>
@@ -987,7 +1338,7 @@ function RunScreen() {
                     <span className="text-zinc-200/80">{activeRecap.outcomeText}</span>
                   </p>
                 </div>
-                <div className="flex flex-wrap gap-1 justify-end">
+                <div className="flex flex-wrap gap-1 items-center justify-end">
                   {formatDeltas(activeRecap)
                     .filter((p) => p.label !== '记录简化' || featureFlags.fallbackBadgeEnabled)
                     .map((pill, i) => (
@@ -1004,6 +1355,7 @@ function RunScreen() {
                       {pill.label}
                     </span>
                   ))}
+                  <span className="text-xs text-zinc-300/70 ml-1 shrink-0">{TURN_VALUE_LABELS[evaluateTurnValue(activeRecap)]}</span>
                 </div>
               </div>
             </div>
@@ -1121,24 +1473,22 @@ function RunScreen() {
                 <>
                   {lastResponse.scene_blocks.slice(0, 1).map((block, i) => (
                     <div key={i} className="animate-fade-in mb-3 md:mb-4">
-                      {block.type === 'TITLE' && <h2 className="text-base md:text-lg font-bold text-white mb-1 uppercase tracking-widest">{block.content}</h2>}
-                      {block.type === 'EVENT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100 font-sans">{block.content}</p>}
-                      {block.type === 'RESULT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100/90 border-l-2 border-red-900/60 pl-3 italic font-sans">{block.content}</p>}
-                      {block.type === 'AFTERTASTE' && <p className="text-xs md:text-sm text-zinc-400 mt-1 italic font-serif">"{block.content}"</p>}
+                      {block.type === 'TITLE' && <h2 className="text-base md:text-lg font-bold text-white mb-1 uppercase tracking-widest">{narrativeMoreOpen ? block.content : sanitizeNarrative(block.content)}</h2>}
+                      {block.type === 'EVENT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100 font-sans">{narrativeMoreOpen ? block.content : sanitizeNarrative(block.content)}</p>}
+                      {block.type === 'RESULT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100/90 border-l-2 border-red-900/60 pl-3 italic font-sans">{narrativeMoreOpen ? block.content : sanitizeNarrative(block.content)}</p>}
+                      {block.type === 'AFTERTASTE' && <p className="text-xs md:text-sm text-zinc-400 mt-1 italic font-serif">"{narrativeMoreOpen ? block.content : sanitizeNarrative(block.content)}"</p>}
                     </div>
                   ))}
-                  {lastResponse.scene_blocks.length > 1 && (
+                  {(lastResponse.scene_blocks.length > 1 || !narrativeMoreOpen) && (
                     <>
-                      {narrativeMoreOpen ? (
-                        lastResponse.scene_blocks.slice(1).map((block, i) => (
-                          <div key={i} className="animate-fade-in mb-3 md:mb-4">
-                            {block.type === 'TITLE' && <h2 className="text-base md:text-lg font-bold text-white mb-1 uppercase tracking-widest">{block.content}</h2>}
-                            {block.type === 'EVENT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100 font-sans">{block.content}</p>}
-                            {block.type === 'RESULT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100/90 border-l-2 border-red-900/60 pl-3 italic font-sans">{block.content}</p>}
-                            {block.type === 'AFTERTASTE' && <p className="text-xs md:text-sm text-zinc-400 mt-1 italic font-serif">"{block.content}"</p>}
-                          </div>
-                        ))
-                      ) : null}
+                      {narrativeMoreOpen && lastResponse.scene_blocks.slice(1).map((block, i) => (
+                        <div key={i} className="animate-fade-in mb-3 md:mb-4">
+                          {block.type === 'TITLE' && <h2 className="text-base md:text-lg font-bold text-white mb-1 uppercase tracking-widest">{block.content}</h2>}
+                          {block.type === 'EVENT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100 font-sans">{block.content}</p>}
+                          {block.type === 'RESULT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100/90 border-l-2 border-red-900/60 pl-3 italic font-sans">{block.content}</p>}
+                          {block.type === 'AFTERTASTE' && <p className="text-xs md:text-sm text-zinc-400 mt-1 italic font-serif">"{block.content}"</p>}
+                        </div>
+                      ))}
                       <button
                         type="button"
                         className="text-xs text-zinc-500 hover:text-zinc-300 border border-gray-700/60 hover:border-gray-600 px-2 py-1 rounded transition mb-3 md:mb-4"
@@ -1156,17 +1506,133 @@ function RunScreen() {
                   {gameState.status === 'WIN' ? '撤离成功' : '撤离失败'}
                 </h3>
                 <p className="text-xs text-gray-400">{gameState.logs[gameState.logs.length - 1]}</p>
+                {gameState.status === 'WIN' && (() => {
+                  const highlights = getRunHighlights(gameState, contextFeed);
+                  const valueHighlights = getSettlementValueHighlights(gameState, contextFeed);
+                  const selectedContracts = getRunConfig().selectedContracts ?? [];
+                  const completedIds = getCompletedContractIds(gameState, contextFeed, selectedContracts);
+                  const carriedShow = gameState.bag.slice(0, 4);
+                  const overflow = Math.max(0, gameState.bag.length - 4);
+                  return (
+                    <div className="text-left space-y-3">
+                      {highlights.length > 0 && (
+                        <div className="border border-green-900/50 bg-green-950/20 rounded p-4 space-y-2">
+                          <h4 className="text-sm font-medium text-green-200">本局亮点</h4>
+                          <ul className="list-disc list-inside text-xs text-green-100/90 space-y-0.5">
+                            {highlights.map((h, i) => (
+                              <li key={i}>{h}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      <div className="border border-gray-600 bg-[#0d0d0d] rounded p-4 space-y-2">
+                        <h4 className="text-sm font-medium text-zinc-400 uppercase tracking-wide">本局挑战结算</h4>
+                        {selectedContracts.length === 0 ? (
+                          <p className="text-xs text-zinc-500">本局未接挑战</p>
+                        ) : (
+                          <ul className="text-xs text-zinc-300 space-y-1">
+                            {(selectedContracts as ContractId[]).map((id) => {
+                              const done = completedIds.includes(id);
+                              return (
+                                <li key={id} className="flex justify-between items-center gap-2">
+                                  <span>{CONTRACT_LABELS[id]}</span>
+                                  <span className={done ? 'text-emerald-400/90' : 'text-zinc-500'}>{done ? '完成' : '未完成'}</span>
+                                  {done && <span className="text-amber-200/90">+{CONTRACT_REWARD_POINTS}</span>}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        )}
+                      </div>
+                      {valueHighlights.length > 0 && (
+                        <div className="border border-amber-900/40 bg-amber-950/20 rounded p-4 space-y-2">
+                          <h4 className="text-sm font-medium text-amber-200">本局价值亮点</h4>
+                          <ul className="list-disc list-inside text-xs text-amber-100/90 space-y-0.5">
+                            {valueHighlights.map((h, i) => (
+                              <li key={i}>{h}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      <div className="border border-gray-600 bg-[#0d0d0d] rounded p-4 space-y-2">
+                        <h4 className="text-sm font-medium text-zinc-200">带出清单</h4>
+                        {carriedShow.length > 0 ? (
+                          <ul className="text-xs text-zinc-300 space-y-0.5">
+                            {carriedShow.map((item, i) => (
+                              <li key={i}>
+                                <span>{item.name}</span>
+                                {getItemTier(item.name) !== '普通' && (
+                                  <span className="ml-1 text-[10px] text-amber-200/80 border border-amber-700/40 rounded px-1 py-0.5">【{getItemTier(item.name)}】</span>
+                                )}
+                                {getItemPurpose(item.name) && (
+                                  <span className="text-zinc-400/70 ml-1 line-clamp-1">· {getItemPurpose(item.name)}</span>
+                                )}
+                              </li>
+                            ))}
+                            {overflow > 0 && <li>等{gameState.bag.length}件</li>}
+                          </ul>
+                        ) : (
+                          <p className="text-xs text-zinc-300">无</p>
+                        )}
+                        {insuranceKeptName != null && (
+                          <p className="text-[11px] text-amber-200/90">保险袋保住：{insuranceKeptName}</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
                 {gameState.status === 'LOSS' && (() => {
                   const diagnosis = diagnoseLoss(gameState, contextFeed);
+                  const regret = getRunRegret(gameState, contextFeed);
+                  const selectedContracts = getRunConfig().selectedContracts ?? [];
+                  const completedIds = getCompletedContractIds(gameState, contextFeed, selectedContracts);
+                  const valueHighlights = getSettlementValueHighlights(gameState, contextFeed);
                   return (
-                    <div className="text-left border border-red-900/50 bg-red-950/20 rounded p-4 space-y-2">
-                      <h4 className="text-sm font-medium text-red-200">这次栽在：</h4>
-                      <ul className="list-disc list-inside text-xs text-red-100/90 space-y-1">
-                        {diagnosis.causes.map((c, i) => (
-                          <li key={i}>{c}</li>
-                        ))}
-                      </ul>
-                      <p className="text-xs text-amber-200/90 pt-1 border-t border-red-900/30">下次建议：{diagnosis.suggestion}</p>
+                    <div className="text-left space-y-3">
+                      <div className="border border-red-900/50 bg-red-950/20 rounded p-4 space-y-2">
+                        <h4 className="text-sm font-medium text-red-200">这次栽在：</h4>
+                        <ul className="list-disc list-inside text-xs text-red-100/90 space-y-1">
+                          {diagnosis.causes.map((c, i) => (
+                            <li key={i}>{c}</li>
+                          ))}
+                        </ul>
+                        <p className="text-xs text-amber-200/90 pt-1 border-t border-red-900/30">下次建议：{diagnosis.suggestion}</p>
+                      </div>
+                      {regret && (
+                        <div className="border border-amber-900/40 bg-amber-950/20 rounded p-3">
+                          <h4 className="text-sm font-medium text-amber-200">本局遗憾</h4>
+                          <p className="text-xs text-amber-100/90">{regret}</p>
+                        </div>
+                      )}
+                      <div className="border border-gray-600 bg-[#0d0d0d] rounded p-4 space-y-2">
+                        <h4 className="text-sm font-medium text-zinc-400 uppercase tracking-wide">本局挑战结算</h4>
+                        {selectedContracts.length === 0 ? (
+                          <p className="text-xs text-zinc-500">本局未接挑战</p>
+                        ) : (
+                          <ul className="text-xs text-zinc-300 space-y-1">
+                            {(selectedContracts as ContractId[]).map((id) => {
+                              const done = completedIds.includes(id);
+                              return (
+                                <li key={id} className="flex justify-between items-center gap-2">
+                                  <span>{CONTRACT_LABELS[id]}</span>
+                                  <span className={done ? 'text-emerald-400/90' : 'text-zinc-500'}>{done ? '完成' : '未完成'}</span>
+                                  {done && <span className="text-amber-200/90">+{CONTRACT_REWARD_POINTS}</span>}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        )}
+                      </div>
+                      {valueHighlights.length > 0 && (
+                        <div className="border border-amber-900/40 bg-amber-950/20 rounded p-4 space-y-2">
+                          <h4 className="text-sm font-medium text-amber-200">本局价值亮点</h4>
+                          <ul className="list-disc list-inside text-xs text-amber-100/90 space-y-0.5">
+                            {valueHighlights.map((h, i) => (
+                              <li key={i}>{h}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
@@ -1177,6 +1643,24 @@ function RunScreen() {
                     <p className="text-sm text-gray-300">{insuranceSettlementMessage}</p>
                   )}
                 </div>
+                {(() => {
+                  const rigLevel = getCurrentRigLevel();
+                  const goal = getNextRigGoal(rigLevel);
+                  const inventory = getMaterialInventory();
+                  const filled = fillGoalWithInventory(goal, inventory);
+                  if (filled.materials.length === 0) return null;
+                  return (
+                    <div className="text-left border border-amber-900/40 bg-amber-950/20 rounded p-4 space-y-2">
+                      <h4 className="text-sm font-medium text-amber-200">下一档提升还差</h4>
+                      <ul className="text-xs text-amber-100/90 space-y-0.5">
+                        {filled.materials.map((m, i) => (
+                          <li key={i}>{m.name} {m.current}/{m.need}</li>
+                        ))}
+                      </ul>
+                      <p className="text-[11px] text-amber-200/80">{filled.rewardText}</p>
+                    </div>
+                  );
+                })()}
                 <div className="flex flex-wrap justify-center gap-3">
                   <button
                     onClick={() => { setSettlementButtonsDisabled(true); window.location.hash = '#/'; }}
@@ -1198,93 +1682,199 @@ function RunScreen() {
             </div>
           </div>
           <div className="p-4 pt-2 md:pt-3 pb-4 bg-[#0d0d0d] border-t border-gray-800 space-y-3 shrink-0">
-            {gameState.status === 'PLAYING' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-[860px] mx-auto w-full px-3 md:px-6 mt-2 md:mt-3">
-                {lastResponse?.choices?.map((choice, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    disabled={turnInFlight}
-                    onClick={() => {
-                      setLastChoiceLabel(choice.label);
-                      setLastActionType(choice.action_type);
-                      submitTurn(choice.action_type);
-                    }}
-                    className="group relative p-3 min-h-[44px] bg-gray-900 hover:bg-white/5 border border-gray-800 hover:border-gray-500 text-left transition disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <div className="flex justify-between items-start mb-1">
-                      <span className="text-xs font-bold text-orange-400 group-hover:text-orange-300 uppercase tracking-tighter">{turnInFlight ? '处理中…' : (choice.label ?? '').replace(/回合/g, '片刻')}</span>
-                      <span className={`text-[8px] px-1 border ${choice.risk === 'HIGH' ? 'border-red-900 text-red-600' : choice.risk === 'MID' ? 'border-yellow-900 text-yellow-600' : 'border-green-900 text-green-700'}`}>
-                        {choice.risk} RISK
-                      </span>
-                    </div>
-                    <p className="text-[10px] text-gray-500 line-clamp-1">{(choice.hint ?? '').replace(/回合/g, '片刻')}</p>
-                  </button>
-                ))}
-              </div>
-            )}
-            {!lastResponse && turnInFlight && <div className="text-center py-4 text-xs italic text-gray-600">Initializing environment...</div>}
+            {gameState.status === 'PLAYING' && (() => {
+              const choices = lastResponse?.choices ?? [];
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-[860px] mx-auto w-full px-3 md:px-6 mt-2 md:mt-3">
+                  {choices.map((choice, i) => {
+                    const label = choice.label ?? '';
+                    const badge = getChoiceBadge(choice, gameState);
+                    const isGamble = isGambleChoice(choice);
+                    const isConditional = isConditionalExtractChoice(choice);
+                    return (
+                      <button
+                        key={choice.id ?? i}
+                        type="button"
+                        disabled={turnInFlight}
+                        onClick={() => {
+                          setLastChoiceLabel(choice.label);
+                          setLastActionType(choice.action_type);
+                          if (isConditional) runConditionalExtractTurn();
+                          else if (isGamble) runGambleTurn();
+                          else submitTurn(choice.action_type);
+                        }}
+                        className="group relative p-3 min-h-[44px] bg-gray-900 hover:bg-white/5 border border-gray-800 hover:border-gray-500 text-left transition disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <div className="flex justify-between items-start mb-1">
+                          <span className="text-xs font-bold text-orange-400 group-hover:text-orange-300 uppercase tracking-tighter">{turnInFlight ? '处理中…' : label.replace(/回合/g, '片刻')}</span>
+                          {badge && (
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded border shrink-0 ${
+                              badge === '孤注一掷' ? 'border-amber-700/60 text-amber-200/90' :
+                              badge === '条件撤离' ? 'border-emerald-700/60 text-emerald-200/90' :
+                              badge === '更危险' ? 'border-red-800/60 text-red-200/90' :
+                              'border-amber-800/50 text-amber-200/90'
+                            }`}>
+                              {badge}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-gray-500 line-clamp-1">{(choice.hint ?? '').replace(/回合/g, '片刻')}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+            {!lastResponse && turnInFlight && <div className="text-center py-4 text-xs italic text-gray-600">正在初始化环境…</div>}
           </div>
         </div>
         <aside className="w-[280px] lg:w-[320px] xl:w-[360px] shrink-0 hidden md:flex flex-col gap-3 overflow-y-auto border-l border-gray-800 pl-4">
-          <div className="bg-[#111] p-3 border border-gray-800 rounded">
-            <h4 className="text-xs text-zinc-400 uppercase tracking-wide mb-2 pb-1">BIOS.DATA</h4>
-            <div className="grid grid-cols-2 gap-y-2">
-              <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">WATER</span><span className="text-sm text-zinc-100">{gameState.water.toFixed(1)}L</span></div>
-              <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">FOOD</span><span className="text-sm text-zinc-100">{gameState.food.toFixed(1)}kg</span></div>
-              <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">FUEL</span><span className="text-sm text-zinc-100">{gameState.fuel} unit</span></div>
-              <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">MEDS</span><span className="text-sm text-zinc-100">{gameState.med} pack</span></div>
+          <div className="bg-[#111] p-3 border border-gray-800 rounded min-h-0">
+            <div className="flex items-center gap-2 mb-2">
+              <h4 className="text-xs text-zinc-400 font-medium">背包（{gameState.bag.length}/{BAG_CAPACITY}）</h4>
+              {gameState.bag.length >= BAG_CAPACITY && <span className="px-1.5 py-0.5 text-[10px] font-medium text-amber-400/90 border border-amber-600/50 rounded">满</span>}
             </div>
-          </div>
-          <div className="bg-[#111] p-3 border border-gray-800 flex flex-col rounded min-h-0">
-            <h4 className="text-xs text-zinc-400 uppercase tracking-wide mb-2 pb-1">CARGO_BAY</h4>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-4 gap-2">
               {Array.from({ length: BAG_CAPACITY }).map((_, i) => {
                 const item = gameState.bag[i];
+                const tier = item ? getItemTier(item.name) : null;
                 return (
-                  <div key={i} className={`h-12 border ${item ? 'border-gray-600 bg-gray-900' : 'border-dashed border-gray-800'} flex items-center justify-center relative group rounded-sm`}>
-                    {item ? <div className="text-[10px] text-center p-1 font-bold truncate w-full">{item.name}</div> : <span className="text-[8px] text-gray-800 uppercase">EMPTY</span>}
+                  <div key={i} className={`min-h-[52px] border rounded-sm flex flex-col items-center justify-center p-1.5 ${item ? 'border-gray-600 bg-gray-900' : 'border-dashed border-gray-800'}`}>
+                    {item ? (
+                      <>
+                        <div className="text-[11px] font-medium truncate w-full text-center" title={item.name}>{item.name}</div>
+                        {tier && tier !== '普通' && <span className="text-[9px] text-amber-200/80 mt-0.5">【{tier}】</span>}
+                      </>
+                    ) : <span className="text-[10px] text-gray-600">空</span>}
                   </div>
                 );
               })}
             </div>
-            <div className="mt-auto pt-4 text-[8px] text-gray-600 italic">* Capacity: {gameState.bag.length}/{BAG_CAPACITY} Slots</div>
           </div>
+          <div className="bg-[#111] p-3 border border-gray-800 rounded shrink-0">
+            <h4 className="text-xs text-zinc-400 font-medium mb-1.5">本回合上下文</h4>
+            <p className="text-[11px] text-zinc-300/90 leading-snug">{getFocusHint(gameState, lastResponse, getRunConfig().variantId)}</p>
+            <p className="text-[11px] text-zinc-400/80 mt-1">
+              走向：{contextFeed.length > 0 ? TURN_VALUE_LABELS[evaluateTurnValue(contextFeed[contextFeed.length - 1])] : '—'}
+            </p>
+          </div>
+          {((lastResponse?.choices ?? []).some((c) => c.label && (c.label.includes('撤离-近') || c.label.includes('撤离-远'))) || bagHasFuse(gameState.bag) || (gameState.battery ?? BATTERY_MAX) <= 0) && (
+            <div className="bg-[#111] p-3 border border-gray-800 rounded shrink-0 space-y-1">
+              {(lastResponse?.choices ?? []).some((c) => c.label && (c.label.includes('撤离-近') || c.label.includes('撤离-远'))) && (
+                <p className="text-[11px] text-amber-200/90">撤离窗口已出现</p>
+              )}
+              {bagHasFuse(gameState.bag) && (
+                <p className="text-[11px] text-zinc-300/90">可用：条件撤离（消耗保险丝）</p>
+              )}
+              {(gameState.battery ?? BATTERY_MAX) <= 0 && (
+                <p className="text-[11px] text-zinc-400/90">搜索代价极高，优先撤离</p>
+              )}
+            </div>
+          )}
+          {featureFlags.contractsEnabled && (() => {
+            const selected = getRunConfig().selectedContracts ?? [];
+            if (selected.length === 0) return null;
+            return (
+              <div className="bg-[#111] p-3 border border-gray-800 rounded">
+                <button
+                  type="button"
+                  className="w-full flex justify-between items-center text-left text-xs text-zinc-400 uppercase tracking-wide mb-2 pb-1"
+                  onClick={() => setContractsPanelOpen((o) => !o)}
+                  aria-expanded={contractsPanelOpen}
+                >
+                  挑战（可选）
+                  <span className="text-[10px] text-zinc-500">{contractsPanelOpen ? '−' : '+'}</span>
+                </button>
+                {contractsPanelOpen && (
+                  <div className="space-y-1.5">
+                    {(selected as ContractId[]).map((id) => {
+                      const prog = getContractProgress(id, gameState, contextFeed);
+                      return (
+                        <div key={id} className="text-[11px] border border-gray-800 rounded px-2 py-1.5 bg-black/30">
+                          <span className="text-zinc-300">{CONTRACT_LABELS[id]}</span>
+                          <span className={`ml-1 ${prog.completed ? 'text-emerald-400/90' : 'text-zinc-500'}`}>{prog.progressText}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </aside>
       </div>
 
       {isRightDrawerOpen && (
         <>
           <div className="fixed inset-0 z-40 bg-black/40 md:hidden" role="presentation" aria-hidden="true" onClick={() => setIsRightDrawerOpen(false)} />
-          <div className="fixed right-0 top-0 z-50 h-full w-[320px] max-w-[85vw] flex flex-col bg-[#111] border-l border-gray-800 shadow-2xl md:hidden" role="dialog" aria-modal="true" aria-label="状态与背包">
+          <div className="fixed right-0 top-0 z-50 h-full w-[320px] max-w-[85vw] flex flex-col bg-[#111] border-l border-gray-800 shadow-2xl md:hidden" role="dialog" aria-modal="true" aria-label="背包与状态">
             <div className="flex justify-between items-center p-3 border-b border-gray-800 bg-[#0d0d0d] shrink-0">
-              <h3 className="text-sm font-bold text-gray-300">状态与背包</h3>
+              <h3 className="text-sm font-bold text-gray-300">背包/状态</h3>
               <button type="button" className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-800 rounded" onClick={() => setIsRightDrawerOpen(false)} aria-label="关闭">×</button>
             </div>
             <div className="flex-1 overflow-y-auto p-3 space-y-3">
-              <div className="bg-[#0d0d0d] p-3 border border-gray-800 rounded">
-                <h4 className="text-xs text-zinc-400 uppercase tracking-wide mb-2 pb-1">BIOS.DATA</h4>
-                <div className="grid grid-cols-2 gap-y-2">
-                  <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">WATER</span><span className="text-sm text-zinc-100">{gameState.water.toFixed(1)}L</span></div>
-                  <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">FOOD</span><span className="text-sm text-zinc-100">{gameState.food.toFixed(1)}kg</span></div>
-                  <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">FUEL</span><span className="text-sm text-zinc-100">{gameState.fuel} unit</span></div>
-                  <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">MEDS</span><span className="text-sm text-zinc-100">{gameState.med} pack</span></div>
+              <div className="bg-[#0d0d0d] p-3 border border-gray-800 rounded min-h-0">
+                <div className="flex items-center gap-2 mb-2">
+                  <h4 className="text-xs text-zinc-400 font-medium">背包（{gameState.bag.length}/{BAG_CAPACITY}）</h4>
+                  {gameState.bag.length >= BAG_CAPACITY && <span className="px-1.5 py-0.5 text-[10px] font-medium text-amber-400/90 border border-amber-600/50 rounded">满</span>}
                 </div>
-              </div>
-              <div className="bg-[#0d0d0d] p-3 border border-gray-800 flex flex-col rounded">
-                <h4 className="text-xs text-zinc-400 uppercase tracking-wide mb-2 pb-1">CARGO_BAY</h4>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-4 gap-2">
                   {Array.from({ length: BAG_CAPACITY }).map((_, i) => {
                     const item = gameState.bag[i];
+                    const tier = item ? getItemTier(item.name) : null;
                     return (
-                      <div key={i} className={`h-12 border ${item ? 'border-gray-600 bg-gray-900' : 'border-dashed border-gray-800'} flex items-center justify-center rounded-sm`}>
-                        {item ? <div className="text-[10px] text-center p-1 font-bold truncate w-full">{item.name}</div> : <span className="text-[8px] text-gray-800 uppercase">EMPTY</span>}
+                      <div key={i} className={`min-h-[52px] border rounded-sm flex flex-col items-center justify-center p-1.5 ${item ? 'border-gray-600 bg-gray-900' : 'border-dashed border-gray-800'}`}>
+                        {item ? (
+                          <>
+                            <div className="text-[11px] font-medium truncate w-full text-center" title={item.name}>{item.name}</div>
+                            {tier && tier !== '普通' && <span className="text-[9px] text-amber-200/80 mt-0.5">【{tier}】</span>}
+                          </>
+                        ) : <span className="text-[10px] text-gray-600">空</span>}
                       </div>
                     );
                   })}
                 </div>
-                <div className="mt-3 text-[8px] text-gray-600 italic">* Capacity: {gameState.bag.length}/{BAG_CAPACITY} Slots</div>
               </div>
+              <div className="bg-[#0d0d0d] p-3 border border-gray-800 rounded shrink-0">
+                <h4 className="text-xs text-zinc-400 font-medium mb-1.5">本回合上下文</h4>
+                <p className="text-[11px] text-zinc-300/90 leading-snug">{getFocusHint(gameState, lastResponse, getRunConfig().variantId)}</p>
+                <p className="text-[11px] text-zinc-400/80 mt-1">
+                  走向：{contextFeed.length > 0 ? TURN_VALUE_LABELS[evaluateTurnValue(contextFeed[contextFeed.length - 1])] : '—'}
+                </p>
+              </div>
+              {((lastResponse?.choices ?? []).some((c) => c.label && (c.label.includes('撤离-近') || c.label.includes('撤离-远'))) || bagHasFuse(gameState.bag) || (gameState.battery ?? BATTERY_MAX) <= 0) && (
+                <div className="bg-[#0d0d0d] p-3 border border-gray-800 rounded shrink-0 space-y-1">
+                  {(lastResponse?.choices ?? []).some((c) => c.label && (c.label.includes('撤离-近') || c.label.includes('撤离-远'))) && (
+                    <p className="text-[11px] text-amber-200/90">撤离窗口已出现</p>
+                  )}
+                  {bagHasFuse(gameState.bag) && (
+                    <p className="text-[11px] text-zinc-300/90">可用：条件撤离（消耗保险丝）</p>
+                  )}
+                  {(gameState.battery ?? BATTERY_MAX) <= 0 && (
+                    <p className="text-[11px] text-zinc-400/90">搜索代价极高，优先撤离</p>
+                  )}
+                </div>
+              )}
+              {featureFlags.contractsEnabled && (() => {
+                const selected = getRunConfig().selectedContracts ?? [];
+                if (selected.length === 0) return null;
+                return (
+                  <div className="bg-[#0d0d0d] p-3 border border-gray-800 rounded">
+                    <h4 className="text-xs text-zinc-400 font-medium mb-2">挑战（可选）</h4>
+                    <div className="space-y-1.5">
+                      {(selected as ContractId[]).map((id) => {
+                        const prog = getContractProgress(id, gameState, contextFeed);
+                        return (
+                          <div key={id} className="text-[11px] border border-gray-800 rounded px-2 py-1.5 bg-black/30">
+                            <span className="text-zinc-300">{CONTRACT_LABELS[id]}</span>
+                            <span className={`ml-1 ${prog.completed ? 'text-emerald-400/90' : 'text-zinc-500'}`}>{prog.progressText}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </>
@@ -1294,7 +1884,17 @@ function RunScreen() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70" role="dialog" aria-modal="true" aria-labelledby="bag-modal-title">
           <div className="w-full max-w-sm bg-[#111] border border-gray-700 shadow-2xl rounded-sm p-5 space-y-4">
             <h2 id="bag-modal-title" className="text-lg font-bold text-white">背包已满</h2>
-            <p className="text-sm text-gray-300">新物品：{pendingAddItem.name}（价值 {pendingAddItem.value}）</p>
+            <div>
+              <p className="text-sm text-gray-300">
+                新物品：{pendingAddItem.name}
+                {getItemTier(pendingAddItem.name) !== '普通' && (
+                  <span className="ml-1.5 text-[10px] text-amber-200/90 border border-amber-700/50 rounded px-1 py-0.5">【{getItemTier(pendingAddItem.name)}】</span>
+                )}
+              </p>
+              {getItemPurpose(pendingAddItem.name) && (
+                <p className="text-xs text-zinc-300/70 mt-0.5 line-clamp-1">用途：{getItemPurpose(pendingAddItem.name)}</p>
+              )}
+            </div>
             {!replaceSlotMode ? (
               <div className="flex flex-col gap-2">
                 <button
@@ -1326,7 +1926,12 @@ function RunScreen() {
                         className={`h-14 border text-[10px] truncate p-1 flex flex-col items-center justify-center transition ${item ? 'border-gray-600 bg-gray-900 hover:border-orange-500 hover:bg-orange-900/30' : 'border-dashed border-gray-800 bg-transparent opacity-40 cursor-not-allowed'}`}
                         onClick={() => item && handleBagReplaceSlot(i)}
                       >
-                        {item ? <><span className="truncate w-full">{item.name}</span><span className="text-gray-500">价值 {item.value}</span></> : '—'}
+                        {item ? (
+                          <>
+                            <span className="truncate w-full">{item.name}</span>
+                            {getItemPurpose(item.name) ? <span className="text-[9px] text-zinc-400/70 truncate w-full">用途：{getItemPurpose(item.name)}</span> : <span className="text-gray-500">价值 {item.value}</span>}
+                          </>
+                        ) : '—'}
                       </button>
                     );
                   })}

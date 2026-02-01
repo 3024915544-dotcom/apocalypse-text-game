@@ -46,6 +46,7 @@ function normalizeChoices(choices: unknown[]): Array<{
   risk: RiskLevel;
   preview_cost: { water: number; food: number; fuel: number; med: number; exposure: number; [k: string]: number };
   action_type: ActionType;
+  server_badge?: string;
 }> {
   return choices.map((c) => {
     const choice = c as Record<string, unknown>;
@@ -56,6 +57,7 @@ function normalizeChoices(choices: unknown[]): Array<{
         : "SILENCE") as ActionType;
     const pc = (choice?.preview_cost as Record<string, unknown>) || {};
     const preview_cost = { ...DEFAULT_PREVIEW_COST, ...pc } as typeof DEFAULT_PREVIEW_COST & Record<string, number>;
+    const server_badge = typeof choice?.server_badge === "string" ? choice.server_badge : undefined;
     return {
       id: (choice?.id as string) || "",
       label: (choice?.label as string) || "",
@@ -63,6 +65,7 @@ function normalizeChoices(choices: unknown[]): Array<{
       risk: (choice?.risk as RiskLevel) || RiskLevel.MID,
       preview_cost,
       action_type: actionType,
+      server_badge,
     };
   });
 }
@@ -75,6 +78,8 @@ function normalizeTurnResponse(data: Record<string, unknown>): TurnResponse {
   const map_delta = (ui.map_delta as Record<string, unknown>) || {};
   const bag_delta = (ui.bag_delta as Record<string, unknown>) || {};
   const suggestion = (data.suggestion as Record<string, unknown>) || {};
+  const meta = data.meta as Record<string, unknown> | undefined;
+  const cards = Array.isArray(meta?.cards) ? (meta.cards as string[]) : undefined;
   return {
     scene_blocks: normalizeSceneBlocks(rawBlocks),
     choices: normalizeChoices(rawChoices),
@@ -95,6 +100,7 @@ function normalizeTurnResponse(data: Record<string, unknown>): TurnResponse {
     suggestion: { delta: (suggestion.delta as Record<string, unknown>) || {} },
     memory_update: typeof data.memory_update === "string" ? data.memory_update : "",
     safety_fallback: typeof data.safety_fallback === "string" ? data.safety_fallback : undefined,
+    meta: cards ? { cards } : undefined,
   };
 }
 

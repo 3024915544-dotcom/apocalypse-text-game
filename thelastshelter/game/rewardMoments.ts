@@ -71,9 +71,19 @@ function pickForVariant(
   pool: { name: string; type: BagItem["type"]; value: number }[],
   variantId: RunConfigVariantId
 ): { name: string; type: BagItem["type"]; value: number } {
-  if (variantId === "battery_crisis" || variantId === "night") {
+  if (variantId === "night") {
     const battery = pool.find((p) => p.name.includes("电池") || p.name.includes("电源"));
     if (battery) return battery;
+  }
+  if (variantId === "battery_crisis") {
+    const hard = pool.find(
+      (p) =>
+        p.name.includes("电池") ||
+        p.name.includes("保险丝") ||
+        p.name.includes("导线") ||
+        p.name.includes("电源")
+    );
+    if (hard) return hard;
   }
   return pool[0];
 }
