@@ -12,6 +12,7 @@ import { pickKeptItem, setStoredKeptItem } from './game/insurance';
 import { loadContextFeed, pushContextFeed, clearContextFeed, compressOutcome, truncateSceneBlocks, formatDeltas, type TurnSummary } from './game/contextFeed';
 import { getTensionLabel, getTensionHintForTurn } from './game/tension';
 import { getFocusHint } from './game/focusHint';
+import { diagnoseLoss } from './game/lossDiagnosis';
 import ShelterHome from './ShelterHome';
 
 type LogbookEntry = {
@@ -1124,6 +1125,20 @@ function RunScreen() {
                   {gameState.status === 'WIN' ? '撤离成功' : '撤离失败'}
                 </h3>
                 <p className="text-xs text-gray-400">{gameState.logs[gameState.logs.length - 1]}</p>
+                {gameState.status === 'LOSS' && (() => {
+                  const diagnosis = diagnoseLoss(gameState, contextFeed);
+                  return (
+                    <div className="text-left border border-red-900/50 bg-red-950/20 rounded p-4 space-y-2">
+                      <h4 className="text-sm font-medium text-red-200">这次栽在：</h4>
+                      <ul className="list-disc list-inside text-xs text-red-100/90 space-y-1">
+                        {diagnosis.causes.map((c, i) => (
+                          <li key={i}>{c}</li>
+                        ))}
+                      </ul>
+                      <p className="text-xs text-amber-200/90 pt-1 border-t border-red-900/30">下次建议：{diagnosis.suggestion}</p>
+                    </div>
+                  );
+                })()}
                 <div className="text-left border border-gray-600 bg-[#0d0d0d] p-4 space-y-2">
                   <p className="text-sm text-gray-300">本局生存点：<span className="font-bold text-orange-400">+{settlementRunPoints ?? computeRunPoints(gameState)}</span></p>
                   <p className="text-sm text-gray-300">累计生存点：<span className="font-bold text-white">{getSurvivalPoints()}</span></p>
