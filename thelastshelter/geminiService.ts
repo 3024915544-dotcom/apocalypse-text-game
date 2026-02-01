@@ -4,6 +4,7 @@
  */
 
 import { TurnResponse, GameState, ActionType, DirectionHint, RiskLevel } from "./types";
+import { TURN_ENDPOINT } from "./constants";
 
 /** 请求超时（毫秒） */
 const TURN_REQUEST_TIMEOUT_MS = 12000;
@@ -118,7 +119,7 @@ export async function fetchTurnResponse(
 
   let res: Response;
   try {
-    res = await fetch("/api/turn", {
+    res = await fetch(TURN_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

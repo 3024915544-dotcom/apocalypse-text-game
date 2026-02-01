@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { getRunConfig, setRunConfig, defaultRunConfig, type RunConfigVariantId } from "./game/runConfig";
 import { getSurvivalPoints, spendSurvivalPoints } from "./game/economy";
-import { INSURANCE_COST, APP_VERSION } from "./constants";
+import { INSURANCE_COST, APP_VERSION, TURN_ENDPOINT } from "./constants";
+import { createInitialState } from "./engine";
 
 const VARIANT_LABELS: Record<RunConfigVariantId, string> = {
   night: "夜行",
@@ -18,6 +19,8 @@ const ShelterHome: React.FC = () => {
   const [variantId, setVariantId] = useState<RunConfigVariantId>(() => readInitialConfig().variantId);
   const [insuranceChecked, setInsuranceChecked] = useState(false);
   const [survivalPoints, setSurvivalPoints] = useState(0);
+  const [connectionCheck, setConnectionCheck] = useState<"idle" | "checking" | "ok" | "fail">("idle");
+  const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
 
   useEffect(() => {
     const cfg = getRunConfig();
@@ -38,6 +41,29 @@ const ShelterHome: React.FC = () => {
     }
     setSurvivalPoints(getSurvivalPoints());
     window.location.hash = "#/run";
+  };
+
+  const checkConnection = async () => {
+    setConnectionCheck("checking");
+    setConnectionMessage(null);
+    try {
+      const state = createInitialState();
+      const res = await fetch(TURN_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state, action: "INIT" }),
+      });
+      if (res.ok) {
+        setConnectionCheck("ok");
+        setConnectionMessage("连接正常");
+      } else {
+        setConnectionCheck("fail");
+        setConnectionMessage("服务暂不可用");
+      }
+    } catch {
+      setConnectionCheck("fail");
+      setConnectionMessage("通讯中断");
+    }
   };
 
   return (
@@ -121,6 +147,23 @@ const ShelterHome: React.FC = () => {
         >
           开始探索
         </button>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            className="px-3 py-1.5 text-[10px] border border-gray-600 text-gray-400 hover:bg-gray-800 transition"
+            onClick={checkConnection}
+            disabled={connectionCheck === "checking"}
+          >
+            {connectionCheck === "checking" ? "检查中…" : "检查连接"}
+          </button>
+          {connectionCheck === "ok" && connectionMessage && (
+            <span className="text-[10px] text-green-500">{connectionMessage}</span>
+          )}
+          {connectionCheck === "fail" && connectionMessage && (
+            <span className="text-[10px] text-red-400">{connectionMessage}</span>
+          )}
+        </div>
       </div>
       <div className="absolute bottom-3 right-3 z-10">
         <button

@@ -706,7 +706,7 @@ function RunScreen() {
              </div>
           </div>
           <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-6">
-            {lastResponse?.scene_blocks.map((block, i) => (
+            {lastResponse?.scene_blocks?.map((block, i) => (
               <div key={i} className="animate-fade-in">
                 {block.type === 'TITLE' && <h2 className="text-lg font-bold text-white mb-2 uppercase tracking-widest">{block.content}</h2>}
                 {block.type === 'EVENT' && <p className="text-sm leading-relaxed text-gray-300 font-sans">{block.content}</p>}
@@ -749,7 +749,7 @@ function RunScreen() {
           <div className="p-4 bg-[#0d0d0d] border-t border-gray-800 space-y-3">
             {gameState.status === 'PLAYING' && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {lastResponse?.choices.map((choice, i) => (
+                {lastResponse?.choices?.map((choice, i) => (
                   <button
                     key={i}
                     type="button"

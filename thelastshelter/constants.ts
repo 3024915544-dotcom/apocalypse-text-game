@@ -1,6 +1,9 @@
 /** 版本：优先 VITE_APP_VERSION，无则 'dev'（构建时注入）。 */
 export const APP_VERSION = import.meta.env?.VITE_APP_VERSION ?? "dev";
 
+/** 全项目唯一 turn 接口地址：相对路径，禁止硬编码 localhost/8788/域名。 */
+export const TURN_ENDPOINT = "/api/turn";
+
 export const GRID_SIZE = 9;
 export const MAX_TURNS = 16;
 export const BAG_CAPACITY = 8;

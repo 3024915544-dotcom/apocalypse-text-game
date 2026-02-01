@@ -8,12 +8,15 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
+        // 本地 dev：/api 代理到 wrangler pages dev (8788)，避免 404；可被 VITE_API_PROXY 覆盖
+        proxy: {
+          '/api': {
+            target: env.VITE_API_PROXY || 'http://localhost:8788',
+            changeOrigin: true,
+          },
+        },
       },
       plugins: [react()],
-      // 不在前端注入任何 API Key；/api/turn 由 Cloudflare 后端调用 DeepSeek
-      proxy: env.VITE_API_PROXY
-        ? { "/api": { target: env.VITE_API_PROXY, changeOrigin: true } }
-        : undefined,
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
