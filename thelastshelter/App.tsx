@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { GameState, TurnResponse, ActionType, RiskLevel, DirectionHint, BagItem, SceneBlock } from './types';
 import { createInitialState, applyAction, applyBagDelta, getEmptyBagSlots } from './engine';
-import { fetchTurnResponse, type TurnRequestMeta } from './geminiService';
+import { fetchTurnResponse, type TurnRequestMeta, type TurnError } from './geminiService';
 import { GRID_SIZE, MAX_TURNS, MILESTONES, BAG_CAPACITY, BATTERY_MAX } from './constants';
 import { getSurvivalPoints, addSurvivalPoints, computeRunPoints, getCurrentRunId, setCurrentRunId, isRunSettled, markRunSettled } from './game/economy';
 import { getRunConfig, setRunConfig } from './game/runConfig';
@@ -40,7 +40,22 @@ function RunScreen() {
   });
   const [lastResponse, setLastResponse] = useState<TurnResponse | null>(null);
   const [turnInFlight, setTurnInFlight] = useState(false);
-  const [turnError, setTurnError] = useState<string | null>(null);
+  const [turnError, setTurnError] = useState<TurnError | null>(() => {
+    try {
+      if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('m_apoc_init_failed_v1') === '1')
+        return { type: 'UNKNOWN', message: '上次通讯异常，请返回避难所后重新进入。' };
+    } catch {
+      /* ignore */
+    }
+    return null;
+  });
+  /** 仅请求失败时写入；成功时清空；重试时用此 envelope 重发。 */
+  const [lastFailedTurn, setLastFailedTurn] = useState<{
+    snapshotState: GameState;
+    action: ActionType;
+    meta: TurnRequestMeta;
+    createdAt: number;
+  } | null>(null);
   const [settlementRunPoints, setSettlementRunPoints] = useState<number | null>(null);
   const [lastActionType, setLastActionType] = useState<ActionType | null>(null);
   const [pendingAdds, setPendingAdds] = useState<BagItem[]>([]);
@@ -54,6 +69,7 @@ function RunScreen() {
   const [logbookOpenSet, setLogbookOpenSet] = useState<Record<number, boolean>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasCreditedRef = useRef(false);
+  const hasInitializedRef = useRef(false);
   const devPickupCounterRef = useRef(0);
   const [settlementButtonsDisabled, setSettlementButtonsDisabled] = useState(false);
 
@@ -61,7 +77,17 @@ function RunScreen() {
     setCurrentRunId(gameState.runId);
   }, [gameState.runId]);
 
+  /** 仅局内且未初始化过时自动 INIT；结算/非 PLAYING、已失败 INIT 或刷新恢复的失败态不自动发。 */
   useEffect(() => {
+    if (gameState.status !== 'PLAYING') return;
+    if (hasInitializedRef.current) return;
+    if (lastFailedTurn?.action === 'INIT') return;
+    try {
+      if (sessionStorage.getItem('m_apoc_init_failed_v1') === '1') return;
+    } catch {
+      /* ignore */
+    }
+    hasInitializedRef.current = true;
     submitTurn('INIT');
   }, []);
 
@@ -153,9 +179,15 @@ function RunScreen() {
       if (respTurnIndex != null) {
         const expectedNext = clientTurnIndex + 1;
         if (respTurnIndex !== expectedNext) {
-          setTurnError('回合同步异常，已取消本次推进，请重试');
+          setTurnError({ type: 'UNKNOWN', message: '回合同步异常，已取消本次推进，请重试' });
           return;
         }
+      }
+      setLastFailedTurn(null);
+      try {
+        sessionStorage.removeItem('m_apoc_init_failed_v1');
+      } catch {
+        /* ignore */
       }
       if (action !== 'INIT') {
         setGameState(prev => applyAction(prev, action, {} as Parameters<typeof applyAction>[2]));
@@ -210,11 +242,140 @@ function RunScreen() {
         }
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setTurnError(msg || '请求失败，请重试或返回避难所');
+      const te: TurnError =
+        err != null && typeof err === 'object' && 'type' in err && 'message' in err
+          ? (err as TurnError)
+          : { type: 'UNKNOWN', message: '请求失败，请重试或返回避难所', debug: err instanceof Error ? err.message : String(err) };
+      setTurnError(te);
+      setLastFailedTurn({ snapshotState, action, meta, createdAt: Date.now() });
+      if (action === 'INIT') {
+        try {
+          sessionStorage.setItem('m_apoc_init_failed_v1', '1');
+        } catch {
+          /* ignore */
+        }
+      }
     } finally {
       setTurnInFlight(false);
     }
+  };
+
+  /** 用上次失败时的 envelope 重发；走单飞锁，成功清 envelope 并应用，失败不写档。 */
+  const retryLastFailedTurn = async () => {
+    if (!lastFailedTurn || turnInFlight) return;
+    setTurnInFlight(true);
+    setTurnError(null);
+    const { snapshotState, action, meta } = lastFailedTurn;
+    const clientTurnIndex = meta.clientTurnIndex;
+    try {
+      const response = await fetchTurnResponse(snapshotState, action, meta);
+      const respTurnIndex = response.ui?.progress?.turn_index;
+      if (respTurnIndex != null) {
+        const expectedNext = clientTurnIndex + 1;
+        if (respTurnIndex !== expectedNext) {
+          setTurnError({ type: 'UNKNOWN', message: '回合同步异常，已取消本次推进，请重试' });
+          return;
+        }
+      }
+      setLastFailedTurn(null);
+      try {
+        sessionStorage.removeItem('m_apoc_init_failed_v1');
+      } catch {
+        /* ignore */
+      }
+      if (action !== 'INIT') {
+        setGameState(prev => applyAction(prev, action, {} as Parameters<typeof applyAction>[2]));
+      }
+      setLastResponse(response);
+      const turnIdx = snapshotState.turn_index;
+      const logEntry: LogbookEntry = {
+        id: `${turnIdx}-${Date.now()}`,
+        turn: turnIdx,
+        action,
+        timestamp: Date.now(),
+        scene_blocks: response.scene_blocks ?? [],
+        battery: snapshotState.battery,
+        hp: snapshotState.hp,
+        exposure: snapshotState.exposure,
+        status: snapshotState.status,
+      };
+      setLogbook(prev => [...prev, logEntry]);
+      setLogbookOpenSet(prev => ({
+        ...prev,
+        [turnIdx]: true,
+        [turnIdx - 1]: true,
+        [turnIdx - 2]: true,
+      }));
+      const rawAdds = response.ui?.bag_delta?.add ?? [];
+      const adds: BagItem[] = rawAdds.map((a): BagItem => ({
+        id: a.id,
+        name: a.name,
+        type: (a.type as BagItem['type']) || 'MISC',
+        value: typeof a.value === 'number' && Number.isFinite(a.value) ? Math.floor(a.value) : 10,
+        tag: a.tag,
+        rarity: a.rarity,
+      }));
+      const removes = response.ui?.bag_delta?.remove ?? [];
+      if (response.ui?.bag_delta) {
+        if (adds.length > 0) {
+          const emptySlots = getEmptyBagSlots(snapshotState);
+          if (emptySlots >= adds.length) {
+            setGameState(prev => applyBagDelta(prev, adds, removes));
+          } else {
+            const fillFirst = adds.slice(0, emptySlots);
+            const rest = adds.slice(emptySlots);
+            if (fillFirst.length > 0) {
+              setGameState(prev => applyBagDelta(prev, fillFirst, removes));
+            }
+            setPendingAdds(prev => [...prev, ...rest]);
+            setPendingAddItem(rest[0] ?? null);
+            setIsBagModalOpen(true);
+          }
+        } else {
+          setGameState(prev => applyBagDelta(prev, [], removes));
+        }
+      }
+    } catch (err) {
+      const te: TurnError =
+        err != null && typeof err === 'object' && 'type' in err && 'message' in err
+          ? (err as TurnError)
+          : { type: 'UNKNOWN', message: '请求失败，请重试或返回避难所', debug: err instanceof Error ? err.message : String(err) };
+      setTurnError(te);
+      if (action === 'INIT') {
+        try {
+          sessionStorage.setItem('m_apoc_init_failed_v1', '1');
+        } catch {
+          /* ignore */
+        }
+      }
+    } finally {
+      setTurnInFlight(false);
+    }
+  };
+
+  /** 退出局内：清理错误态与本局态，保留 runConfig，不触发入账/INIT。 */
+  const exitToShelter = () => {
+    setTurnError(null);
+    setTurnInFlight(false);
+    setLastFailedTurn(null);
+    setLastActionType(null);
+    try {
+      sessionStorage.removeItem('m_apoc_init_failed_v1');
+    } catch {
+      /* ignore */
+    }
+    setRunConfig({ insuranceUsed: false });
+    const newState = createInitialState();
+    setCurrentRunId(newState.runId);
+    setGameState(newState);
+    setLastResponse(null);
+    setPendingAdds([]);
+    setIsBagModalOpen(false);
+    setPendingAddItem(null);
+    setReplaceSlotMode(false);
+    setLogbook([]);
+    setLogbookOpenSet({});
+    window.location.hash = '#/';
   };
 
   const restartGame = () => {
@@ -496,19 +657,33 @@ function RunScreen() {
             {!lastResponse && turnInFlight && <div className="text-center py-4 text-xs italic text-gray-600">Initializing environment...</div>}
             {turnError && (
               <div className="p-3 bg-red-950/60 border border-red-800 rounded space-y-2">
-                <p className="text-xs text-red-300">{turnError}</p>
+                <p className="text-xs font-bold text-red-200">
+                  {turnError.type === 'NETWORK' && '通讯中断'}
+                  {turnError.type === 'TIMEOUT' && '通讯超时'}
+                  {turnError.type === 'HTTP' && '服务暂不可用'}
+                  {turnError.type === 'PARSE' && '记录异常，已启用保护'}
+                  {turnError.type === 'UNKNOWN' && (turnError.message || '请求异常')}
+                </p>
+                <p className="text-[10px] text-red-300/90">
+                  {turnError.type === 'NETWORK' || turnError.type === 'TIMEOUT'
+                    ? '网络或信号异常，并非你的操作问题。'
+                    : turnError.type === 'HTTP' || turnError.type === 'PARSE'
+                      ? '服务端暂时异常，已保护当前进度。'
+                      : '请重试或返回避难所后重新进入。'}
+                </p>
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    className="px-3 py-1.5 text-[10px] border border-red-700 text-red-300 hover:bg-red-900/50 transition"
-                    onClick={() => setTurnError(null)}
+                    disabled={!lastFailedTurn || turnInFlight}
+                    className="px-3 py-1.5 text-[10px] border border-red-700 text-red-300 hover:bg-red-900/50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={retryLastFailedTurn}
                   >
                     重试
                   </button>
                   <button
                     type="button"
                     className="px-3 py-1.5 text-[10px] border border-gray-600 text-gray-300 hover:bg-gray-800 transition"
-                    onClick={() => { setTurnError(null); window.location.hash = '#/'; }}
+                    onClick={exitToShelter}
                   >
                     返回避难所
                   </button>

@@ -5,6 +5,23 @@
 
 import { TurnResponse, GameState, ActionType, DirectionHint, RiskLevel } from "./types";
 
+/** 请求超时（毫秒） */
+const TURN_REQUEST_TIMEOUT_MS = 12000;
+
+/** 标准化错误：面向玩家的 message（中文），底层信息放 debug。 */
+export type TurnErrorType = "NETWORK" | "TIMEOUT" | "HTTP" | "PARSE" | "UNKNOWN";
+
+export interface TurnError {
+  type: TurnErrorType;
+  status?: number;
+  message: string;
+  debug?: string;
+}
+
+function toTurnError(type: TurnErrorType, message: string, opts?: { status?: number; debug?: string }): TurnError {
+  return { type, message, ...opts };
+}
+
 const DEFAULT_PREVIEW_COST = {
   water: 0,
   food: 0,
@@ -95,24 +112,45 @@ export async function fetchTurnResponse(
     body.runId = meta.runId;
     body.clientTurnIndex = meta.clientTurnIndex;
   }
-  const res = await fetch("/api/turn", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TURN_REQUEST_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch("/api/turn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    const isAbort = err instanceof Error && err.name === "AbortError";
+    if (isAbort) {
+      throw toTurnError("TIMEOUT", "通讯超时", { debug: String(err) });
+    }
+    throw toTurnError("NETWORK", "通讯中断", { debug: err instanceof Error ? err.message : String(err) });
+  }
+  clearTimeout(timeoutId);
+
   const rawText = await res.text();
   if (!res.ok) {
-    throw new Error(`API ${res.status}: ${rawText.slice(0, 200)}`);
+    throw toTurnError("HTTP", "服务暂不可用", {
+      status: res.status,
+      debug: rawText.slice(0, 200),
+    });
   }
+
   let data: Record<string, unknown>;
   try {
     data = JSON.parse(rawText) as Record<string, unknown>;
   } catch {
-    throw new Error(`JSON 解析失败: ${rawText.slice(0, 200)}`);
+    throw toTurnError("PARSE", "记录异常，已启用保护", { debug: rawText.slice(0, 200) });
   }
   if (data.error != null || data.detail != null) {
-    const msg = typeof data.detail === "string" ? data.detail : typeof data.error === "string" ? data.error : "backend error";
-    throw new Error(msg);
+    const debug = typeof data.detail === "string" ? data.detail : typeof data.error === "string" ? data.error : "backend error";
+    throw toTurnError("HTTP", "服务暂不可用", { debug });
   }
   let out = normalizeTurnResponse(data);
   if (out.safety_fallback && out.scene_blocks.length > 0) {
