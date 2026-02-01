@@ -210,6 +210,7 @@ const ShelterHome: React.FC = () => {
               { key: "shelterHealthCheckEnabled" as const, label: "检查连接按钮" },
               { key: "tutorialHintsEnabled" as const, label: "新手提示" },
               { key: "mapPanelEnabled" as const, label: "地图面板" },
+              { key: "recapBarEnabled" as const, label: "回合结算条（RecapBar）" },
             ].map(({ key, label }) => (
               <label key={key} className="flex items-center gap-2 cursor-pointer group py-0.5">
                 <input

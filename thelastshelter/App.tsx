@@ -9,7 +9,7 @@ import { loadHintsSeen, markHintSeen, type TutorialHintKey } from './game/tutori
 import { getSurvivalPoints, addSurvivalPoints, computeRunPoints, getCurrentRunId, setCurrentRunId, isRunSettled, markRunSettled } from './game/economy';
 import { getRunConfig, setRunConfig } from './game/runConfig';
 import { pickKeptItem, setStoredKeptItem } from './game/insurance';
-import { loadContextFeed, pushContextFeed, clearContextFeed, compressOutcome, truncateSceneBlocks, type TurnSummary } from './game/contextFeed';
+import { loadContextFeed, pushContextFeed, clearContextFeed, compressOutcome, truncateSceneBlocks, formatDeltas, type TurnSummary } from './game/contextFeed';
 import ShelterHome from './ShelterHome';
 
 type LogbookEntry = {
@@ -76,6 +76,8 @@ function RunScreen() {
   const [narrativeMoreOpen, setNarrativeMoreOpen] = useState(false);
   const [selectedSummary, setSelectedSummary] = useState<TurnSummary | null>(null);
   const [isSummaryDrawerOpen, setIsSummaryDrawerOpen] = useState(false);
+  const [activeRecap, setActiveRecap] = useState<TurnSummary | null>(null);
+  const recapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasCreditedRef = useRef(false);
   const hasInitializedRef = useRef(false);
@@ -91,6 +93,15 @@ function RunScreen() {
   useEffect(() => {
     setCurrentRunId(gameState.runId);
   }, [gameState.runId]);
+
+  useEffect(() => {
+    return () => {
+      if (recapTimerRef.current) {
+        clearTimeout(recapTimerRef.current);
+        recapTimerRef.current = null;
+      }
+    };
+  }, []);
 
   /** 仅局内且未初始化过时自动 INIT；结算/非 PLAYING、已失败 INIT 或刷新恢复的失败态不自动发。 */
   useEffect(() => {
@@ -569,6 +580,11 @@ function RunScreen() {
     setRunConfig({ insuranceUsed: false });
     clearContextFeed();
     setContextFeed([]);
+    if (recapTimerRef.current) {
+      clearTimeout(recapTimerRef.current);
+      recapTimerRef.current = null;
+    }
+    setActiveRecap(null);
     const newState = createInitialState();
     setCurrentRunId(newState.runId);
     setGameState(newState);
@@ -619,7 +635,16 @@ function RunScreen() {
       isFallback: detectFallback(response),
       enteredDarkMode: batAfter != null && batAfter <= 0,
     };
+    if (recapTimerRef.current) {
+      clearTimeout(recapTimerRef.current);
+      recapTimerRef.current = null;
+    }
+    setActiveRecap(summary);
     setContextFeed(pushContextFeed(summary));
+    recapTimerRef.current = setTimeout(() => {
+      recapTimerRef.current = null;
+      setActiveRecap(null);
+    }, 8000);
   };
 
   const restartGame = () => {
@@ -633,6 +658,11 @@ function RunScreen() {
     setRunConfig({ insuranceUsed: false });
     clearContextFeed();
     setContextFeed([]);
+    if (recapTimerRef.current) {
+      clearTimeout(recapTimerRef.current);
+      recapTimerRef.current = null;
+    }
+    setActiveRecap(null);
     const newState = createInitialState();
     setCurrentRunId(newState.runId);
     setGameState(newState);
@@ -864,6 +894,37 @@ function RunScreen() {
               >
                 ×
               </button>
+            </div>
+          )}
+          {featureFlags.recapBarEnabled && activeRecap && (
+            <div className="shrink-0 px-3 md:px-4 py-2 pointer-events-none" aria-live="polite" aria-label="本回合结算">
+              <div className="max-w-[860px] mx-auto rounded border border-white/10 bg-black/30 px-3 py-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] md:text-xs text-zinc-200/90 truncate">
+                    <span className="font-semibold text-zinc-100">落笔：{activeRecap.decisionText}</span>
+                    <span className="text-zinc-400/80 mx-1">→</span>
+                    <span className="text-zinc-200/80">{activeRecap.outcomeText}</span>
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-1 justify-end">
+                  {formatDeltas(activeRecap)
+                    .filter((p) => p.label !== '记录简化' || featureFlags.fallbackBadgeEnabled)
+                    .map((pill, i) => (
+                    <span
+                      key={i}
+                      className={`text-[11px] font-mono tabular-nums rounded px-2 py-0.5 border ${
+                        pill.kind === 'neg'
+                          ? 'bg-white/5 border-white/15 text-zinc-200/80'
+                          : pill.kind === 'pos'
+                            ? 'bg-white/5 border-white/20 text-zinc-100/90'
+                            : 'bg-white/5 border-white/10 text-zinc-300/70'
+                      }`}
+                    >
+                      {pill.label}
+                    </span>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
           {turnError && !turnErrorDismissed && (

@@ -107,3 +107,41 @@ export function compressOutcome(content: string | undefined, maxLen: number = OU
   if (oneLine.length <= maxLen) return oneLine;
   return oneLine.slice(0, maxLen) + "…";
 }
+
+export type DeltaPillKind = "pos" | "neg" | "neutral";
+
+export interface DeltaPill {
+  label: string;
+  kind: DeltaPillKind;
+}
+
+/** 纯函数：从 TurnSummary 生成 delta pills（仅非 0 项）及状态 badge，供 RecapBar / contextFeed 复用。 */
+export function formatDeltas(summary: TurnSummary): DeltaPill[] {
+  const out: DeltaPill[] = [];
+  const d = summary.deltas;
+  if (d.batDelta != null && d.batDelta !== 0) {
+    out.push({ label: `电量 ${d.batDelta > 0 ? "+" : ""}${d.batDelta}`, kind: d.batDelta < 0 ? "neg" : "pos" });
+  }
+  if (d.hpDelta != null && d.hpDelta !== 0) {
+    out.push({ label: `生命 ${d.hpDelta > 0 ? "+" : ""}${d.hpDelta}`, kind: d.hpDelta < 0 ? "neg" : "pos" });
+  }
+  if (d.bagDelta != null && d.bagDelta !== 0) {
+    out.push({ label: `背包 ${d.bagDelta > 0 ? "+" : ""}${d.bagDelta}`, kind: d.bagDelta < 0 ? "neg" : "pos" });
+  }
+  if (d.pointsDelta != null && d.pointsDelta !== 0) {
+    out.push({ label: `生存点 +${d.pointsDelta}`, kind: "pos" });
+  }
+  if (summary.enteredDarkMode) {
+    out.push({ label: "黑暗模式", kind: "neutral" });
+  }
+  if (summary.statusAfter === "WIN") {
+    out.push({ label: "撤离成功", kind: "pos" });
+  }
+  if (summary.statusAfter === "LOSS") {
+    out.push({ label: "撤离失败", kind: "neg" });
+  }
+  if (summary.isFallback) {
+    out.push({ label: "记录简化", kind: "neutral" });
+  }
+  return out;
+}

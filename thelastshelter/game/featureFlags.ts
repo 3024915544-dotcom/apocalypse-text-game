@@ -14,6 +14,7 @@ export interface FeatureFlags {
   shelterHealthCheckEnabled: boolean;
   tutorialHintsEnabled: boolean;
   mapPanelEnabled: boolean;
+  recapBarEnabled: boolean;
 }
 
 export const DEFAULT_FLAGS: FeatureFlags = {
@@ -24,6 +25,7 @@ export const DEFAULT_FLAGS: FeatureFlags = {
   shelterHealthCheckEnabled: true,
   tutorialHintsEnabled: true,
   mapPanelEnabled: false,
+  recapBarEnabled: true,
 };
 
 function mergeWithDefaults(partial: Partial<FeatureFlags> | null): FeatureFlags {
@@ -36,6 +38,7 @@ function mergeWithDefaults(partial: Partial<FeatureFlags> | null): FeatureFlags 
     shelterHealthCheckEnabled: typeof partial.shelterHealthCheckEnabled === "boolean" ? partial.shelterHealthCheckEnabled : DEFAULT_FLAGS.shelterHealthCheckEnabled,
     tutorialHintsEnabled: typeof partial.tutorialHintsEnabled === "boolean" ? partial.tutorialHintsEnabled : DEFAULT_FLAGS.tutorialHintsEnabled,
     mapPanelEnabled: typeof partial.mapPanelEnabled === "boolean" ? partial.mapPanelEnabled : DEFAULT_FLAGS.mapPanelEnabled,
+    recapBarEnabled: typeof partial.recapBarEnabled === "boolean" ? partial.recapBarEnabled : DEFAULT_FLAGS.recapBarEnabled,
   };
 }
 
