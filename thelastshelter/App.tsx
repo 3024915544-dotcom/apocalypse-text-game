@@ -9,7 +9,7 @@ import { loadHintsSeen, markHintSeen, type TutorialHintKey } from './game/tutori
 import { getSurvivalPoints, addSurvivalPoints, computeRunPoints, getCurrentRunId, setCurrentRunId, isRunSettled, markRunSettled } from './game/economy';
 import { getRunConfig, setRunConfig } from './game/runConfig';
 import { pickKeptItem, setStoredKeptItem } from './game/insurance';
-import { loadContextFeed, pushContextFeed, clearContextFeed, compressOutcome, type TurnSummary } from './game/contextFeed';
+import { loadContextFeed, pushContextFeed, clearContextFeed, compressOutcome, truncateSceneBlocks, type TurnSummary } from './game/contextFeed';
 import ShelterHome from './ShelterHome';
 
 type LogbookEntry = {
@@ -74,6 +74,8 @@ function RunScreen() {
   const [contextFeed, setContextFeed] = useState<TurnSummary[]>(() => loadContextFeed());
   const [lastChoiceLabel, setLastChoiceLabel] = useState<string | null>(null);
   const [narrativeMoreOpen, setNarrativeMoreOpen] = useState(false);
+  const [selectedSummary, setSelectedSummary] = useState<TurnSummary | null>(null);
+  const [isSummaryDrawerOpen, setIsSummaryDrawerOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasCreditedRef = useRef(false);
   const hasInitializedRef = useRef(false);
@@ -613,6 +615,9 @@ function RunScreen() {
       },
       statusBefore,
       statusAfter,
+      sceneBlocks: truncateSceneBlocks(response.scene_blocks),
+      isFallback: detectFallback(response),
+      enteredDarkMode: batAfter != null && batAfter <= 0,
     };
     setContextFeed(pushContextFeed(summary));
   };
@@ -844,7 +849,7 @@ function RunScreen() {
                 className="px-2 py-1 border border-gray-600 text-gray-400 hover:bg-gray-800 hover:text-white transition text-[10px]"
                 onClick={() => setIsLogbookOpen(true)}
               >
-                日志簿
+                完整日志
               </button>
             </div>
           </div>
@@ -912,27 +917,55 @@ function RunScreen() {
             <div className="max-w-[860px] mx-auto w-full px-3 md:px-6 space-y-4">
               {contextFeed.length > 0 && (
                 <section className="shrink-0" aria-label="本局记录">
-                  <h3 className="text-xs text-zinc-400 uppercase tracking-wide mb-2">本局记录</h3>
-                  <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <h3 className="text-xs text-zinc-400 uppercase tracking-wide">本局记录</h3>
+                    {contextFeed.length > 8 && (
+                      <button
+                        type="button"
+                        className="text-[11px] text-zinc-500 hover:text-zinc-300 border border-white/10 hover:border-white/20 rounded px-2 py-0.5 transition"
+                        onClick={() => { setSelectedSummary(null); setIsSummaryDrawerOpen(true); }}
+                      >
+                        查看全部
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-2 max-h-[200px] overflow-y-auto pr-1">
                     {contextFeed.slice(-8).map((item) => (
-                      <div key={item.id} className="rounded border border-gray-700/60 bg-black/30 px-2.5 py-1.5 text-[11px] md:text-xs">
-                        <p className="font-medium text-orange-300/95">你选择：{item.decisionText}</p>
-                        <p className="text-zinc-300/90 mt-0.5 line-clamp-2">{item.outcomeText}</p>
-                        <div className="flex flex-wrap gap-1 mt-1">
+                      <button
+                        key={item.id}
+                        type="button"
+                        className="w-full text-left rounded border border-gray-700/60 bg-black/30 px-2.5 py-1.5 hover:bg-black/50 hover:border-gray-600/60 transition"
+                        onClick={() => { setSelectedSummary(item); setIsSummaryDrawerOpen(true); }}
+                      >
+                        <p className="font-medium text-zinc-100 border-l-2 border-zinc-500/60 pl-3">你选择：{item.decisionText}</p>
+                        <p className="text-sm text-zinc-200/80 line-clamp-2 mt-0.5">{item.outcomeText}</p>
+                        <div className="flex flex-wrap gap-1 mt-1.5">
                           {item.deltas.batDelta != null && item.deltas.batDelta !== 0 && (
-                            <span className="px-1.5 py-0.5 rounded bg-blue-950/50 text-blue-200/90 border border-blue-800/40">电量 {item.deltas.batDelta > 0 ? '+' : ''}{item.deltas.batDelta}</span>
+                            <span className="text-[12px] text-zinc-100/80 bg-white/5 border border-white/10 rounded px-2 py-0.5 font-mono tabular-nums">电量 {item.deltas.batDelta > 0 ? '+' : ''}{item.deltas.batDelta}</span>
                           )}
                           {item.deltas.hpDelta != null && item.deltas.hpDelta !== 0 && (
-                            <span className="px-1.5 py-0.5 rounded bg-red-950/50 text-red-200/90 border border-red-800/40">生命 {item.deltas.hpDelta > 0 ? '+' : ''}{item.deltas.hpDelta}</span>
+                            <span className="text-[12px] text-zinc-100/80 bg-white/5 border border-white/10 rounded px-2 py-0.5 font-mono tabular-nums">生命 {item.deltas.hpDelta > 0 ? '+' : ''}{item.deltas.hpDelta}</span>
                           )}
                           {item.deltas.bagDelta != null && item.deltas.bagDelta !== 0 && (
-                            <span className="px-1.5 py-0.5 rounded bg-amber-950/50 text-amber-200/90 border border-amber-800/40">背包 {item.deltas.bagDelta > 0 ? '+' : ''}{item.deltas.bagDelta}</span>
+                            <span className="text-[12px] text-zinc-100/80 bg-white/5 border border-white/10 rounded px-2 py-0.5 font-mono tabular-nums">背包 {item.deltas.bagDelta > 0 ? '+' : ''}{item.deltas.bagDelta}</span>
                           )}
                           {item.deltas.pointsDelta != null && item.deltas.pointsDelta !== 0 && (
-                            <span className="px-1.5 py-0.5 rounded bg-green-950/50 text-green-200/90 border border-green-800/40">生存点 +{item.deltas.pointsDelta}</span>
+                            <span className="text-[12px] text-zinc-100/80 bg-white/5 border border-white/10 rounded px-2 py-0.5 font-mono tabular-nums">生存点 +{item.deltas.pointsDelta}</span>
+                          )}
+                          {item.statusAfter === 'LOSS' && (
+                            <span className="text-[11px] text-red-200/90 border border-red-800/50 rounded px-1.5 py-0.5">撤离失败</span>
+                          )}
+                          {item.statusAfter === 'WIN' && (
+                            <span className="text-[11px] text-green-200/90 border border-green-800/50 rounded px-1.5 py-0.5">撤离成功</span>
+                          )}
+                          {item.enteredDarkMode && (
+                            <span className="text-[11px] text-amber-200/90 border border-amber-800/50 rounded px-1.5 py-0.5">黑暗模式</span>
+                          )}
+                          {featureFlags.fallbackBadgeEnabled && item.isFallback && (
+                            <span className="text-[11px] text-amber-200/80 border border-amber-800/40 rounded px-1.5 py-0.5">记录简化</span>
                           )}
                         </div>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 </section>
@@ -1150,12 +1183,82 @@ function RunScreen() {
         </div>
       )}
 
+      {isSummaryDrawerOpen && (
+        <>
+          <div className="fixed inset-0 z-50 bg-black/50 md:bg-black/40" role="presentation" aria-hidden="true" onClick={() => { setIsSummaryDrawerOpen(false); setSelectedSummary(null); }} />
+          <div
+            className="fixed z-50 flex flex-col bg-[#111] border border-gray-800 shadow-2xl overflow-hidden transition-transform duration-200 ease-out md:rounded-l-xl
+              bottom-0 left-0 right-0 max-h-[85vh] rounded-t-xl
+              md:bottom-0 md:top-0 md:left-auto md:right-0 md:max-h-none md:w-[420px]"
+            role="dialog"
+            aria-modal="true"
+            aria-label={selectedSummary ? `第 ${selectedSummary.turn} 回合详情` : '全部记录'}
+          >
+            <div className="flex justify-between items-center p-3 border-b border-gray-800 bg-[#0d0d0d] shrink-0">
+              <h2 className="text-base font-bold text-white">
+                {selectedSummary ? `第 ${selectedSummary.turn} 回合` : '全部记录'}
+              </h2>
+              <button type="button" className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-800 rounded" onClick={() => { setIsSummaryDrawerOpen(false); setSelectedSummary(null); }} aria-label="关闭">×</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-3 min-h-0">
+              {selectedSummary ? (
+                <div className="space-y-4">
+                  <p className="font-medium text-zinc-100 border-l-2 border-zinc-500/60 pl-3">你选择：{selectedSummary.decisionText}</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedSummary.deltas.batDelta != null && (
+                      <span className="text-[12px] text-zinc-100/80 bg-white/5 border border-white/10 rounded px-2 py-0.5 font-mono tabular-nums">电量 {selectedSummary.deltas.batDelta > 0 ? '+' : ''}{selectedSummary.deltas.batDelta}</span>
+                    )}
+                    {selectedSummary.deltas.hpDelta != null && (
+                      <span className="text-[12px] text-zinc-100/80 bg-white/5 border border-white/10 rounded px-2 py-0.5 font-mono tabular-nums">生命 {selectedSummary.deltas.hpDelta > 0 ? '+' : ''}{selectedSummary.deltas.hpDelta}</span>
+                    )}
+                    {selectedSummary.deltas.bagDelta != null && (
+                      <span className="text-[12px] text-zinc-100/80 bg-white/5 border border-white/10 rounded px-2 py-0.5 font-mono tabular-nums">背包 {selectedSummary.deltas.bagDelta > 0 ? '+' : ''}{selectedSummary.deltas.bagDelta}</span>
+                    )}
+                    {selectedSummary.deltas.pointsDelta != null && (
+                      <span className="text-[12px] text-zinc-100/80 bg-white/5 border border-white/10 rounded px-2 py-0.5 font-mono tabular-nums">生存点 +{selectedSummary.deltas.pointsDelta}</span>
+                    )}
+                  </div>
+                  {selectedSummary.sceneBlocks && selectedSummary.sceneBlocks.length > 0 && (
+                    <div className="space-y-3 border-t border-gray-800 pt-3">
+                      {selectedSummary.sceneBlocks.map((block, i) => (
+                        <p key={i} className="text-sm leading-relaxed text-zinc-200/90 font-sans">{block.content}</p>
+                      ))}
+                    </div>
+                  )}
+                  <button type="button" className="w-full py-2 text-sm border border-gray-600 text-gray-300 hover:bg-gray-800 rounded transition" onClick={() => { setIsSummaryDrawerOpen(false); setSelectedSummary(null); }}>关闭</button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {[...contextFeed].reverse().map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className="w-full text-left rounded border border-gray-700/60 bg-black/30 px-2.5 py-1.5 hover:bg-black/50 hover:border-gray-600/60 transition"
+                      onClick={() => setSelectedSummary(item)}
+                    >
+                      <p className="font-medium text-zinc-100 border-l-2 border-zinc-500/60 pl-3 text-sm">第 {item.turn} 回合 · 你选择：{item.decisionText}</p>
+                      <p className="text-xs text-zinc-200/80 line-clamp-2 mt-0.5">{item.outcomeText}</p>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {item.deltas.batDelta != null && item.deltas.batDelta !== 0 && <span className="text-[11px] text-zinc-100/80 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 font-mono">电量 {item.deltas.batDelta > 0 ? '+' : ''}{item.deltas.batDelta}</span>}
+                        {item.deltas.hpDelta != null && item.deltas.hpDelta !== 0 && <span className="text-[11px] text-zinc-100/80 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 font-mono">生命 {item.deltas.hpDelta > 0 ? '+' : ''}{item.deltas.hpDelta}</span>}
+                        {item.deltas.bagDelta != null && item.deltas.bagDelta !== 0 && <span className="text-[11px] text-zinc-100/80 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 font-mono">背包 {item.deltas.bagDelta > 0 ? '+' : ''}{item.deltas.bagDelta}</span>}
+                        {item.deltas.pointsDelta != null && item.deltas.pointsDelta !== 0 && <span className="text-[11px] text-zinc-100/80 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 font-mono">生存点 +{item.deltas.pointsDelta}</span>}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
       {isLogbookOpen && (
         <>
           <div className="fixed inset-0 z-50 bg-black/50" role="presentation" aria-hidden="true" onClick={() => setIsLogbookOpen(false)} />
           <div className="fixed bottom-0 left-0 right-0 z-50 max-h-[80vh] h-[70vh] flex flex-col bg-[#111] border-t border-gray-700 rounded-t-xl shadow-2xl overflow-hidden" role="dialog" aria-modal="true" aria-labelledby="logbook-title">
             <div className="flex justify-between items-center p-3 border-b border-gray-800 bg-[#0d0d0d] shrink-0">
-              <h2 id="logbook-title" className="text-base font-bold text-white">日志簿</h2>
+              <h2 id="logbook-title" className="text-base font-bold text-white">完整日志</h2>
               <button type="button" className="px-2 py-1 text-xs text-gray-400 hover:text-white border border-gray-600 hover:bg-gray-800 transition rounded" onClick={() => setIsLogbookOpen(false)}>关闭</button>
             </div>
             <div className="flex-1 overflow-y-auto p-3 space-y-2">

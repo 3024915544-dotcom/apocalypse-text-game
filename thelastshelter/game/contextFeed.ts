@@ -5,6 +5,9 @@
 
 const STORAGE_KEY = "m_apoc_context_feed_v1";
 
+const MAX_SCENE_BLOCKS = 6;
+const MAX_CONTENT_LEN = 240;
+
 export interface TurnSummary {
   id: string;
   turn: number;
@@ -18,6 +21,30 @@ export interface TurnSummary {
   };
   statusBefore: string;
   statusAfter: string;
+  /** 本回合完整叙事块（已截断），用于详情抽屉回放。 */
+  sceneBlocks?: { content: string }[];
+  isFallback?: boolean;
+  /** 本回合是否进入黑暗模式（电量 ≤ 0）。 */
+  enteredDarkMode?: boolean;
+}
+
+/** 截断单条 content，最多 maxLen 字。 */
+function truncateContent(s: string, maxLen: number = MAX_CONTENT_LEN): string {
+  if (typeof s !== "string") return "";
+  const t = s.trim();
+  return t.length <= maxLen ? t : t.slice(0, maxLen) + "…";
+}
+
+/** 将 scene_blocks 转为轻量数组并截断：最多 maxBlocks 条，每条 content 最多 maxContentLen 字。 */
+export function truncateSceneBlocks(
+  blocks: { content?: string }[] | undefined,
+  maxBlocks: number = MAX_SCENE_BLOCKS,
+  maxContentLen: number = MAX_CONTENT_LEN
+): { content: string }[] {
+  if (!Array.isArray(blocks) || blocks.length === 0) return [];
+  return blocks.slice(0, maxBlocks).map((b) => ({
+    content: truncateContent(typeof b.content === "string" ? b.content : "", maxContentLen),
+  }));
 }
 
 function parseFeed(raw: string | null): TurnSummary[] {
@@ -41,9 +68,19 @@ export function loadContextFeed(): TurnSummary[] {
 
 const MAX_FEED_ITEMS = 50;
 
+/** 写入前对条目的 sceneBlocks 做条数与长度限制，避免 localStorage 膨胀。 */
+function normalizeItem(item: TurnSummary): TurnSummary {
+  if (!item.sceneBlocks || item.sceneBlocks.length === 0) return item;
+  return {
+    ...item,
+    sceneBlocks: truncateSceneBlocks(item.sceneBlocks, MAX_SCENE_BLOCKS, MAX_CONTENT_LEN),
+  };
+}
+
 /** 追加一条并写回，裁剪为最多 50 条；返回裁剪后的新数组。 */
 export function pushContextFeed(item: TurnSummary): TurnSummary[] {
-  const list = [...loadContextFeed(), item].slice(-MAX_FEED_ITEMS);
+  const normalized = normalizeItem(item);
+  const list = [...loadContextFeed(), normalized].slice(-MAX_FEED_ITEMS);
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
   } catch {
