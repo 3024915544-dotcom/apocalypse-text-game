@@ -3,6 +3,7 @@ import { GameState, TurnResponse, ActionType, RiskLevel, DirectionHint, BagItem,
 import { createInitialState, applyAction, applyBagDelta, getEmptyBagSlots } from './engine';
 import { fetchTurnResponse, type TurnRequestMeta, type TurnError } from './geminiService';
 import { GRID_SIZE, MAX_TURNS, MILESTONES, BAG_CAPACITY, BATTERY_MAX } from './constants';
+import { logTurnTrace, detectFallback } from './game/turnTrace';
 import { getSurvivalPoints, addSurvivalPoints, computeRunPoints, getCurrentRunId, setCurrentRunId, isRunSettled, markRunSettled } from './game/economy';
 import { getRunConfig, setRunConfig } from './game/runConfig';
 import { pickKeptItem, setStoredKeptItem } from './game/insurance';
@@ -173,6 +174,10 @@ function RunScreen() {
     const runId = gameState.runId;
     const snapshotState = action !== 'INIT' ? applyAction(gameState, action, {} as Parameters<typeof applyAction>[2]) : gameState;
     const meta: TurnRequestMeta = { runId, clientTurnIndex };
+    const batBefore = snapshotState.battery ?? null;
+    const hpBefore = snapshotState.hp ?? null;
+    const bagCountBefore = snapshotState.bag.length;
+    const statusBefore = snapshotState.status;
     try {
       const response = await fetchTurnResponse(snapshotState, action, meta);
       const respTurnIndex = response.ui?.progress?.turn_index;
@@ -180,6 +185,22 @@ function RunScreen() {
         const expectedNext = clientTurnIndex + 1;
         if (respTurnIndex !== expectedNext) {
           setTurnError({ type: 'UNKNOWN', message: '回合同步异常，已取消本次推进，请重试' });
+          logTurnTrace({
+            ts: Date.now(),
+            runId,
+            clientTurnIndex,
+            action: String(action),
+            ok: false,
+            errType: 'UNKNOWN',
+            batBefore,
+            batAfter: null,
+            hpBefore,
+            hpAfter: null,
+            bagCountBefore,
+            bagCountAfter: bagCountBefore,
+            statusBefore,
+            statusAfter: statusBefore,
+          });
           return;
         }
       }
@@ -193,6 +214,25 @@ function RunScreen() {
         setGameState(prev => applyAction(prev, action, {} as Parameters<typeof applyAction>[2]));
       }
       setLastResponse(response);
+      const addCount = response.ui?.bag_delta?.add?.length ?? 0;
+      const removeCount = response.ui?.bag_delta?.remove?.length ?? 0;
+      const bagCountAfter = snapshotState.bag.length + addCount - removeCount;
+      logTurnTrace({
+        ts: Date.now(),
+        runId,
+        clientTurnIndex,
+        action: String(action),
+        ok: true,
+        isFallback: detectFallback(response),
+        batBefore,
+        batAfter: snapshotState.battery ?? null,
+        hpBefore,
+        hpAfter: snapshotState.hp ?? null,
+        bagCountBefore,
+        bagCountAfter,
+        statusBefore,
+        statusAfter: snapshotState.status,
+      });
       const turnIdx = snapshotState.turn_index;
       const logEntry: LogbookEntry = {
         id: `${turnIdx}-${Date.now()}`,
@@ -248,6 +288,23 @@ function RunScreen() {
           : { type: 'UNKNOWN', message: '请求失败，请重试或返回避难所', debug: err instanceof Error ? err.message : String(err) };
       setTurnError(te);
       setLastFailedTurn({ snapshotState, action, meta, createdAt: Date.now() });
+      logTurnTrace({
+        ts: Date.now(),
+        runId,
+        clientTurnIndex,
+        action: String(action),
+        ok: false,
+        errType: te.type,
+        httpStatus: te.status,
+        batBefore,
+        batAfter: null,
+        hpBefore,
+        hpAfter: null,
+        bagCountBefore,
+        bagCountAfter: bagCountBefore,
+        statusBefore,
+        statusAfter: statusBefore,
+      });
       if (action === 'INIT') {
         try {
           sessionStorage.setItem('m_apoc_init_failed_v1', '1');
@@ -267,6 +324,11 @@ function RunScreen() {
     setTurnError(null);
     const { snapshotState, action, meta } = lastFailedTurn;
     const clientTurnIndex = meta.clientTurnIndex;
+    const runId = meta.runId;
+    const batBefore = snapshotState.battery ?? null;
+    const hpBefore = snapshotState.hp ?? null;
+    const bagCountBefore = snapshotState.bag.length;
+    const statusBefore = snapshotState.status;
     try {
       const response = await fetchTurnResponse(snapshotState, action, meta);
       const respTurnIndex = response.ui?.progress?.turn_index;
@@ -274,6 +336,22 @@ function RunScreen() {
         const expectedNext = clientTurnIndex + 1;
         if (respTurnIndex !== expectedNext) {
           setTurnError({ type: 'UNKNOWN', message: '回合同步异常，已取消本次推进，请重试' });
+          logTurnTrace({
+            ts: Date.now(),
+            runId,
+            clientTurnIndex,
+            action: String(action),
+            ok: false,
+            errType: 'UNKNOWN',
+            batBefore,
+            batAfter: null,
+            hpBefore,
+            hpAfter: null,
+            bagCountBefore,
+            bagCountAfter: bagCountBefore,
+            statusBefore,
+            statusAfter: statusBefore,
+          });
           return;
         }
       }
@@ -287,6 +365,25 @@ function RunScreen() {
         setGameState(prev => applyAction(prev, action, {} as Parameters<typeof applyAction>[2]));
       }
       setLastResponse(response);
+      const addCount = response.ui?.bag_delta?.add?.length ?? 0;
+      const removeCount = response.ui?.bag_delta?.remove?.length ?? 0;
+      const bagCountAfter = snapshotState.bag.length + addCount - removeCount;
+      logTurnTrace({
+        ts: Date.now(),
+        runId,
+        clientTurnIndex,
+        action: String(action),
+        ok: true,
+        isFallback: detectFallback(response),
+        batBefore,
+        batAfter: snapshotState.battery ?? null,
+        hpBefore,
+        hpAfter: snapshotState.hp ?? null,
+        bagCountBefore,
+        bagCountAfter,
+        statusBefore,
+        statusAfter: snapshotState.status,
+      });
       const turnIdx = snapshotState.turn_index;
       const logEntry: LogbookEntry = {
         id: `${turnIdx}-${Date.now()}`,
@@ -341,6 +438,23 @@ function RunScreen() {
           ? (err as TurnError)
           : { type: 'UNKNOWN', message: '请求失败，请重试或返回避难所', debug: err instanceof Error ? err.message : String(err) };
       setTurnError(te);
+      logTurnTrace({
+        ts: Date.now(),
+        runId,
+        clientTurnIndex,
+        action: String(action),
+        ok: false,
+        errType: te.type,
+        httpStatus: te.status,
+        batBefore,
+        batAfter: null,
+        hpBefore,
+        hpAfter: null,
+        bagCountBefore,
+        bagCountAfter: bagCountBefore,
+        statusBefore,
+        statusAfter: statusBefore,
+      });
       if (action === 'INIT') {
         try {
           sessionStorage.setItem('m_apoc_init_failed_v1', '1');
@@ -578,6 +692,9 @@ function RunScreen() {
           <div className="p-3 border-b border-gray-800 flex justify-between items-center gap-2 text-[10px] bg-[#0d0d0d]">
              <span className="text-orange-500">TERMINAL.LOG</span>
              <div className="flex items-center gap-2">
+               {lastResponse && detectFallback(lastResponse) && (
+                 <span className="text-amber-500/90 italic" title="记录简化">通讯不稳</span>
+               )}
                {turnInFlight && <span className="animate-pulse text-blue-400 italic">处理中…</span>}
                <button
                  type="button"

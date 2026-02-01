@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { getRunConfig, setRunConfig, defaultRunConfig, type RunConfigVariantId } from "./game/runConfig";
 import { getSurvivalPoints, spendSurvivalPoints } from "./game/economy";
-import { INSURANCE_COST } from "./constants";
+import { INSURANCE_COST, APP_VERSION } from "./constants";
 
 const VARIANT_LABELS: Record<RunConfigVariantId, string> = {
   night: "夜行",
@@ -32,16 +32,16 @@ const ShelterHome: React.FC = () => {
   const handleStart = () => {
     if (insuranceChecked) {
       if (!spendSurvivalPoints(INSURANCE_COST)) return;
-      setRunConfig({ regionId, variantId, ts: Date.now(), insurancePurchased: true });
+      setRunConfig({ regionId, variantId, ts: Date.now(), insurancePurchased: true, insuranceUsed: false });
     } else {
-      setRunConfig({ regionId, variantId, ts: Date.now(), insurancePurchased: false });
+      setRunConfig({ regionId, variantId, ts: Date.now(), insurancePurchased: false, insuranceUsed: false });
     }
     setSurvivalPoints(getSurvivalPoints());
     window.location.hash = "#/run";
   };
 
   return (
-    <div className="min-h-screen w-full flex flex-col items-center justify-center bg-[#0a0a0a] text-[#d1d1d1] p-4 md:p-8">
+    <div className="min-h-screen w-full flex flex-col items-center justify-center bg-[#0a0a0a] text-[#d1d1d1] p-4 md:p-8 relative">
       <div className="absolute inset-0 opacity-5 pointer-events-none bg-[url('https://www.transparenttextures.com/patterns/asfalt-dark.png')]" />
       <div className="relative z-10 w-full max-w-md space-y-8">
         <h1 className="text-2xl md:text-3xl font-bold italic text-white font-['Playfair_Display'] text-center">
@@ -120,6 +120,22 @@ const ShelterHome: React.FC = () => {
           disabled={insuranceChecked && survivalPoints < INSURANCE_COST}
         >
           开始探索
+        </button>
+      </div>
+      <div className="absolute bottom-3 right-3 z-10">
+        <button
+          type="button"
+          className="text-[10px] text-gray-500 hover:text-gray-400 font-mono select-all cursor-pointer"
+          onClick={() => {
+            try {
+              navigator.clipboard.writeText(APP_VERSION);
+            } catch {
+              /* ignore */
+            }
+          }}
+          title="点击复制版本号"
+        >
+          版本：{APP_VERSION}
         </button>
       </div>
     </div>
