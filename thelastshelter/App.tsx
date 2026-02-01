@@ -13,6 +13,7 @@ import { loadContextFeed, pushContextFeed, clearContextFeed, compressOutcome, tr
 import { getTensionLabel, getTensionHintForTurn } from './game/tension';
 import { getFocusHint } from './game/focusHint';
 import { diagnoseLoss } from './game/lossDiagnosis';
+import { getRewardItemForWindow, isInRewardWindow, markWindowTriggered, clearRewardMoments } from './game/rewardMoments';
 import ShelterHome from './ShelterHome';
 
 type LogbookEntry = {
@@ -348,20 +349,9 @@ function RunScreen() {
         [turnIdx - 1]: true,
         [turnIdx - 2]: true,
       }));
-      buildAndPushContextSummary({
-        snapshotState,
-        action,
-        response,
-        bagCountBefore,
-        bagCountAfter,
-        statusBefore,
-        decisionLabel: lastChoiceLabel ?? actionLabel(action),
-      });
       const nextTurnIndex = action === "INIT" ? 1 : snapshotState.turn_index + 1;
-      const tensionHintMsg = getTensionHintForTurn(nextTurnIndex);
-      if (tensionHintMsg) setTensionHint(tensionHintMsg);
       const rawAdds = response.ui?.bag_delta?.add ?? [];
-      const adds: BagItem[] = rawAdds.map((a): BagItem => ({
+      let adds: BagItem[] = rawAdds.map((a): BagItem => ({
         id: a.id,
         name: a.name,
         type: (a.type as BagItem['type']) || 'MISC',
@@ -369,25 +359,50 @@ function RunScreen() {
         tag: a.tag,
         rarity: a.rarity,
       }));
-      const removes = response.ui?.bag_delta?.remove ?? [];
-      if (response.ui?.bag_delta) {
-        if (adds.length > 0) {
-          const emptySlots = getEmptyBagSlots(snapshotState);
-          if (emptySlots >= adds.length) {
-            setGameState(prev => applyBagDelta(prev, adds, removes));
-          } else {
-            const fillFirst = adds.slice(0, emptySlots);
-            const rest = adds.slice(emptySlots);
-            if (fillFirst.length > 0) {
-              setGameState(prev => applyBagDelta(prev, fillFirst, removes));
-            }
-            setPendingAdds(prev => [...prev, ...rest]);
-            setPendingAddItem(rest[0] ?? null);
-            setIsBagModalOpen(true);
-          }
-        } else {
-          setGameState(prev => applyBagDelta(prev, [], removes));
+      const runConfig = getRunConfig();
+      if (isInRewardWindow(nextTurnIndex, 'w1')) {
+        const r = getRewardItemForWindow('w1', runConfig.variantId, runId, snapshotState.bag.length);
+        if (r) {
+          adds = [...adds, r];
+          markWindowTriggered(runId, 'w1');
         }
+      }
+      if (isInRewardWindow(nextTurnIndex, 'w2')) {
+        const r = getRewardItemForWindow('w2', runConfig.variantId, runId, snapshotState.bag.length);
+        if (r) {
+          adds = [...adds, r];
+          markWindowTriggered(runId, 'w2');
+        }
+      }
+      const removes = response.ui?.bag_delta?.remove ?? [];
+      const bagCountAfterReal = snapshotState.bag.length + adds.length - removes.length;
+      buildAndPushContextSummary({
+        snapshotState,
+        action,
+        response,
+        bagCountBefore,
+        bagCountAfter: bagCountAfterReal,
+        statusBefore,
+        decisionLabel: lastChoiceLabel ?? actionLabel(action),
+      });
+      const tensionHintMsg = getTensionHintForTurn(nextTurnIndex);
+      if (tensionHintMsg) setTensionHint(tensionHintMsg);
+      if (adds.length > 0) {
+        const emptySlots = getEmptyBagSlots(snapshotState);
+        if (emptySlots >= adds.length) {
+          setGameState(prev => applyBagDelta(prev, adds, removes));
+        } else {
+          const fillFirst = adds.slice(0, emptySlots);
+          const rest = adds.slice(emptySlots);
+          if (fillFirst.length > 0) {
+            setGameState(prev => applyBagDelta(prev, fillFirst, removes));
+          }
+          setPendingAdds(prev => [...prev, ...rest]);
+          setPendingAddItem(rest[0] ?? null);
+          setIsBagModalOpen(true);
+        }
+      } else {
+        setGameState(prev => applyBagDelta(prev, [], removes));
       }
     } catch (err) {
       const te: TurnError =
@@ -518,20 +533,9 @@ function RunScreen() {
         [turnIdx - 1]: true,
         [turnIdx - 2]: true,
       }));
-      buildAndPushContextSummary({
-        snapshotState,
-        action,
-        response,
-        bagCountBefore,
-        bagCountAfter,
-        statusBefore,
-        decisionLabel: actionLabel(action),
-      });
       const nextTurnIndex = action === "INIT" ? 1 : snapshotState.turn_index + 1;
-      const tensionHintMsg = getTensionHintForTurn(nextTurnIndex);
-      if (tensionHintMsg) setTensionHint(tensionHintMsg);
       const rawAdds = response.ui?.bag_delta?.add ?? [];
-      const adds: BagItem[] = rawAdds.map((a): BagItem => ({
+      let adds: BagItem[] = rawAdds.map((a): BagItem => ({
         id: a.id,
         name: a.name,
         type: (a.type as BagItem['type']) || 'MISC',
@@ -539,25 +543,50 @@ function RunScreen() {
         tag: a.tag,
         rarity: a.rarity,
       }));
-      const removes = response.ui?.bag_delta?.remove ?? [];
-      if (response.ui?.bag_delta) {
-        if (adds.length > 0) {
-          const emptySlots = getEmptyBagSlots(snapshotState);
-          if (emptySlots >= adds.length) {
-            setGameState(prev => applyBagDelta(prev, adds, removes));
-          } else {
-            const fillFirst = adds.slice(0, emptySlots);
-            const rest = adds.slice(emptySlots);
-            if (fillFirst.length > 0) {
-              setGameState(prev => applyBagDelta(prev, fillFirst, removes));
-            }
-            setPendingAdds(prev => [...prev, ...rest]);
-            setPendingAddItem(rest[0] ?? null);
-            setIsBagModalOpen(true);
-          }
-        } else {
-          setGameState(prev => applyBagDelta(prev, [], removes));
+      const runConfigRetry = getRunConfig();
+      if (isInRewardWindow(nextTurnIndex, 'w1')) {
+        const r = getRewardItemForWindow('w1', runConfigRetry.variantId, runId, snapshotState.bag.length);
+        if (r) {
+          adds = [...adds, r];
+          markWindowTriggered(runId, 'w1');
         }
+      }
+      if (isInRewardWindow(nextTurnIndex, 'w2')) {
+        const r = getRewardItemForWindow('w2', runConfigRetry.variantId, runId, snapshotState.bag.length);
+        if (r) {
+          adds = [...adds, r];
+          markWindowTriggered(runId, 'w2');
+        }
+      }
+      const removes = response.ui?.bag_delta?.remove ?? [];
+      const bagCountAfterRealRetry = snapshotState.bag.length + adds.length - removes.length;
+      buildAndPushContextSummary({
+        snapshotState,
+        action,
+        response,
+        bagCountBefore,
+        bagCountAfter: bagCountAfterRealRetry,
+        statusBefore,
+        decisionLabel: actionLabel(action),
+      });
+      const tensionHintMsg = getTensionHintForTurn(nextTurnIndex);
+      if (tensionHintMsg) setTensionHint(tensionHintMsg);
+      if (adds.length > 0) {
+        const emptySlots = getEmptyBagSlots(snapshotState);
+        if (emptySlots >= adds.length) {
+          setGameState(prev => applyBagDelta(prev, adds, removes));
+        } else {
+          const fillFirst = adds.slice(0, emptySlots);
+          const rest = adds.slice(emptySlots);
+          if (fillFirst.length > 0) {
+            setGameState(prev => applyBagDelta(prev, fillFirst, removes));
+          }
+          setPendingAdds(prev => [...prev, ...rest]);
+          setPendingAddItem(rest[0] ?? null);
+          setIsBagModalOpen(true);
+        }
+      } else {
+        setGameState(prev => applyBagDelta(prev, [], removes));
       }
     } catch (err) {
       const te: TurnError =
@@ -611,6 +640,7 @@ function RunScreen() {
     setRunConfig({ insuranceUsed: false });
     clearContextFeed();
     setContextFeed([]);
+    clearRewardMoments();
     if (recapTimerRef.current) {
       clearTimeout(recapTimerRef.current);
       recapTimerRef.current = null;
@@ -694,6 +724,7 @@ function RunScreen() {
     setRunConfig({ insuranceUsed: false });
     clearContextFeed();
     setContextFeed([]);
+    clearRewardMoments();
     if (recapTimerRef.current) {
       clearTimeout(recapTimerRef.current);
       recapTimerRef.current = null;
