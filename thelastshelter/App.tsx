@@ -77,6 +77,7 @@ function RunScreen() {
   const [settlementButtonsDisabled, setSettlementButtonsDisabled] = useState(false);
   const [featureFlags] = useState(() => loadFeatureFlags());
   const [isRightDrawerOpen, setIsRightDrawerOpen] = useState(false);
+  const [turnErrorDismissed, setTurnErrorDismissed] = useState(false);
   const [activeHint, setActiveHint] = useState<{ key: TutorialHintKey; text: string } | null>(null);
   const batteryHintShownRef = useRef(loadHintsSeen().BAT_LOW === true);
   const extractHintShownRef = useRef(loadHintsSeen().EXTRACT_CHOICES === true);
@@ -215,6 +216,7 @@ function RunScreen() {
     if (gameState.status !== 'PLAYING' && action !== 'INIT') return;
     setTurnInFlight(true);
     setTurnError(null);
+    setTurnErrorDismissed(false);
     const clientTurnIndex = gameState.turn_index;
     const runId = gameState.runId;
     const snapshotState = action !== 'INIT' ? applyAction(gameState, action, {} as Parameters<typeof applyAction>[2]) : gameState;
@@ -371,6 +373,7 @@ function RunScreen() {
     if (!lastFailedTurn || turnInFlight) return;
     setTurnInFlight(true);
     setTurnError(null);
+    setTurnErrorDismissed(false);
     const { snapshotState, action, meta } = lastFailedTurn;
     const clientTurnIndex = meta.clientTurnIndex;
     const runId = meta.runId;
@@ -525,6 +528,7 @@ function RunScreen() {
   /** 退出局内：清理错误态与本局态，保留 runConfig，不触发入账/INIT。 */
   const exitToShelter = () => {
     setTurnError(null);
+    setTurnErrorDismissed(false);
     setTurnInFlight(false);
     setLastFailedTurn(null);
     setLastActionType(null);
@@ -554,6 +558,7 @@ function RunScreen() {
     setInsuranceSettlementMessage(null);
     setSettlementButtonsDisabled(false);
     setTurnError(null);
+    setTurnErrorDismissed(false);
     setRunConfig({ insuranceUsed: false });
     const newState = createInitialState();
     setCurrentRunId(newState.runId);
@@ -788,14 +793,61 @@ function RunScreen() {
               </button>
             </div>
           )}
-          <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 min-h-0">
-            <div className="max-w-[860px] mx-auto space-y-6">
+          {turnError && !turnErrorDismissed && (
+            <div className="shrink-0 px-3 md:px-4 pt-2 md:pt-3">
+              <div className="max-w-[860px] mx-auto rounded-lg border border-red-500/30 bg-red-950/30 px-3 py-2 flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-red-200 text-sm font-medium">
+                    {turnError.type === 'NETWORK' && '通讯中断'}
+                    {turnError.type === 'TIMEOUT' && '通讯超时'}
+                    {turnError.type === 'HTTP' && '服务暂不可用'}
+                    {turnError.type === 'PARSE' && '记录异常，已启用保护'}
+                    {turnError.type === 'UNKNOWN' && (turnError.message || '请求异常')}
+                  </p>
+                  <p className="text-red-100/80 text-xs mt-0.5">
+                    {turnError.type === 'NETWORK' || turnError.type === 'TIMEOUT'
+                      ? '网络或信号异常，并非你的操作问题。'
+                      : turnError.type === 'HTTP' || turnError.type === 'PARSE'
+                        ? '服务端暂时异常，已保护当前进度。'
+                        : '请重试或返回避难所后重新进入。'}
+                  </p>
+                  <div className="flex gap-2 mt-2">
+                    <button
+                      type="button"
+                      disabled={!lastFailedTurn || turnInFlight}
+                      className="px-2.5 py-1.5 text-xs border border-red-500/50 text-red-200 hover:bg-red-900/40 transition disabled:opacity-50 disabled:cursor-not-allowed rounded"
+                      onClick={retryLastFailedTurn}
+                    >
+                      重试
+                    </button>
+                    <button
+                      type="button"
+                      className="px-2.5 py-1.5 text-xs border border-zinc-600 text-zinc-300 hover:bg-zinc-800/50 transition rounded"
+                      onClick={exitToShelter}
+                    >
+                      返回避难所
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="shrink-0 w-6 h-6 flex items-center justify-center text-red-200/80 hover:text-red-100 hover:bg-red-900/40 rounded"
+                  onClick={() => setTurnErrorDismissed(true)}
+                  aria-label="关闭"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          )}
+          <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 min-h-0 bg-black/20 md:bg-black/15">
+            <div className="max-w-[860px] mx-auto w-full px-3 md:px-6">
               {lastResponse?.scene_blocks?.map((block, i) => (
-                <div key={i} className="animate-fade-in">
-                  {block.type === 'TITLE' && <h2 className="text-lg font-bold text-white mb-2 uppercase tracking-widest">{block.content}</h2>}
-                  {block.type === 'EVENT' && <p className="text-sm leading-relaxed text-gray-300 font-sans">{block.content}</p>}
-                  {block.type === 'RESULT' && <p className="text-sm border-l-2 border-red-900 pl-3 italic text-gray-400 font-sans">{block.content}</p>}
-                  {block.type === 'AFTERTASTE' && <p className="text-xs text-gray-500 mt-2 italic font-serif">"{block.content}"</p>}
+                <div key={i} className="animate-fade-in mb-3 md:mb-4 last:mb-0">
+                  {block.type === 'TITLE' && <h2 className="text-base md:text-lg font-bold text-white mb-1 uppercase tracking-widest">{block.content}</h2>}
+                  {block.type === 'EVENT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100 font-sans">{block.content}</p>}
+                  {block.type === 'RESULT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100/90 border-l-2 border-red-900/60 pl-3 italic font-sans">{block.content}</p>}
+                  {block.type === 'AFTERTASTE' && <p className="text-xs md:text-sm text-zinc-400 mt-1 italic font-serif">"{block.content}"</p>}
                 </div>
               ))}
             {gameState.status !== 'PLAYING' && (
@@ -831,9 +883,9 @@ function RunScreen() {
             )}
             </div>
           </div>
-          <div className="p-4 bg-[#0d0d0d] border-t border-gray-800 space-y-3 shrink-0">
+          <div className="p-4 pt-2 md:pt-3 pb-4 bg-[#0d0d0d] border-t border-gray-800 space-y-3 shrink-0">
             {gameState.status === 'PLAYING' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-[860px] mx-auto">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-[860px] mx-auto w-full px-3 md:px-6 mt-2 md:mt-3">
                 {lastResponse?.choices?.map((choice, i) => (
                   <button
                     key={i}
@@ -857,55 +909,20 @@ function RunScreen() {
               </div>
             )}
             {!lastResponse && turnInFlight && <div className="text-center py-4 text-xs italic text-gray-600">Initializing environment...</div>}
-            {turnError && (
-              <div className="p-3 bg-red-950/60 border border-red-800 rounded space-y-2">
-                <p className="text-xs font-bold text-red-200">
-                  {turnError.type === 'NETWORK' && '通讯中断'}
-                  {turnError.type === 'TIMEOUT' && '通讯超时'}
-                  {turnError.type === 'HTTP' && '服务暂不可用'}
-                  {turnError.type === 'PARSE' && '记录异常，已启用保护'}
-                  {turnError.type === 'UNKNOWN' && (turnError.message || '请求异常')}
-                </p>
-                <p className="text-[10px] text-red-300/90">
-                  {turnError.type === 'NETWORK' || turnError.type === 'TIMEOUT'
-                    ? '网络或信号异常，并非你的操作问题。'
-                    : turnError.type === 'HTTP' || turnError.type === 'PARSE'
-                      ? '服务端暂时异常，已保护当前进度。'
-                      : '请重试或返回避难所后重新进入。'}
-                </p>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    disabled={!lastFailedTurn || turnInFlight}
-                    className="px-3 py-1.5 text-[10px] border border-red-700 text-red-300 hover:bg-red-900/50 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                    onClick={retryLastFailedTurn}
-                  >
-                    重试
-                  </button>
-                  <button
-                    type="button"
-                    className="px-3 py-1.5 text-[10px] border border-gray-600 text-gray-300 hover:bg-gray-800 transition"
-                    onClick={exitToShelter}
-                  >
-                    返回避难所
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         </div>
-        <aside className="w-[280px] lg:w-[320px] xl:w-[360px] shrink-0 hidden md:flex flex-col gap-4 overflow-y-auto border-l border-gray-800 pl-4">
+        <aside className="w-[280px] lg:w-[320px] xl:w-[360px] shrink-0 hidden md:flex flex-col gap-3 overflow-y-auto border-l border-gray-800 pl-4">
           <div className="bg-[#111] p-3 border border-gray-800 rounded">
-            <h4 className="text-[10px] font-bold text-gray-500 mb-2 uppercase border-b border-gray-800 pb-1">BIOS.DATA</h4>
-            <div className="grid grid-cols-2 gap-y-2 text-[10px]">
-              <div className="flex flex-col"><span className="text-blue-500 text-[8px]">WATER</span><span className="font-bold text-white">{gameState.water.toFixed(1)}L</span></div>
-              <div className="flex flex-col"><span className="text-orange-500 text-[8px]">FOOD</span><span className="font-bold text-white">{gameState.food.toFixed(1)}kg</span></div>
-              <div className="flex flex-col"><span className="text-yellow-600 text-[8px]">FUEL</span><span className="font-bold text-white">{gameState.fuel} unit</span></div>
-              <div className="flex flex-col"><span className="text-red-400 text-[8px]">MEDS</span><span className="font-bold text-white">{gameState.med} pack</span></div>
+            <h4 className="text-xs text-zinc-400 uppercase tracking-wide mb-2 pb-1">BIOS.DATA</h4>
+            <div className="grid grid-cols-2 gap-y-2">
+              <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">WATER</span><span className="text-sm text-zinc-100">{gameState.water.toFixed(1)}L</span></div>
+              <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">FOOD</span><span className="text-sm text-zinc-100">{gameState.food.toFixed(1)}kg</span></div>
+              <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">FUEL</span><span className="text-sm text-zinc-100">{gameState.fuel} unit</span></div>
+              <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">MEDS</span><span className="text-sm text-zinc-100">{gameState.med} pack</span></div>
             </div>
           </div>
           <div className="bg-[#111] p-3 border border-gray-800 flex flex-col rounded min-h-0">
-            <h4 className="text-[10px] font-bold text-gray-500 mb-2 uppercase border-b border-gray-800 pb-1">CARGO_BAY</h4>
+            <h4 className="text-xs text-zinc-400 uppercase tracking-wide mb-2 pb-1">CARGO_BAY</h4>
             <div className="grid grid-cols-2 gap-2">
               {Array.from({ length: BAG_CAPACITY }).map((_, i) => {
                 const item = gameState.bag[i];
@@ -929,18 +946,18 @@ function RunScreen() {
               <h3 className="text-sm font-bold text-gray-300">状态与背包</h3>
               <button type="button" className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-800 rounded" onClick={() => setIsRightDrawerOpen(false)} aria-label="关闭">×</button>
             </div>
-            <div className="flex-1 overflow-y-auto p-3 space-y-4">
+            <div className="flex-1 overflow-y-auto p-3 space-y-3">
               <div className="bg-[#0d0d0d] p-3 border border-gray-800 rounded">
-                <h4 className="text-[10px] font-bold text-gray-500 mb-2 uppercase border-b border-gray-800 pb-1">BIOS.DATA</h4>
-                <div className="grid grid-cols-2 gap-y-2 text-[10px]">
-                  <div className="flex flex-col"><span className="text-blue-500 text-[8px]">WATER</span><span className="font-bold text-white">{gameState.water.toFixed(1)}L</span></div>
-                  <div className="flex flex-col"><span className="text-orange-500 text-[8px]">FOOD</span><span className="font-bold text-white">{gameState.food.toFixed(1)}kg</span></div>
-                  <div className="flex flex-col"><span className="text-yellow-600 text-[8px]">FUEL</span><span className="font-bold text-white">{gameState.fuel} unit</span></div>
-                  <div className="flex flex-col"><span className="text-red-400 text-[8px]">MEDS</span><span className="font-bold text-white">{gameState.med} pack</span></div>
+                <h4 className="text-xs text-zinc-400 uppercase tracking-wide mb-2 pb-1">BIOS.DATA</h4>
+                <div className="grid grid-cols-2 gap-y-2">
+                  <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">WATER</span><span className="text-sm text-zinc-100">{gameState.water.toFixed(1)}L</span></div>
+                  <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">FOOD</span><span className="text-sm text-zinc-100">{gameState.food.toFixed(1)}kg</span></div>
+                  <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">FUEL</span><span className="text-sm text-zinc-100">{gameState.fuel} unit</span></div>
+                  <div className="flex flex-col gap-0.5"><span className="text-[10px] text-zinc-500">MEDS</span><span className="text-sm text-zinc-100">{gameState.med} pack</span></div>
                 </div>
               </div>
               <div className="bg-[#0d0d0d] p-3 border border-gray-800 flex flex-col rounded">
-                <h4 className="text-[10px] font-bold text-gray-500 mb-2 uppercase border-b border-gray-800 pb-1">CARGO_BAY</h4>
+                <h4 className="text-xs text-zinc-400 uppercase tracking-wide mb-2 pb-1">CARGO_BAY</h4>
                 <div className="grid grid-cols-2 gap-2">
                   {Array.from({ length: BAG_CAPACITY }).map((_, i) => {
                     const item = gameState.bag[i];
