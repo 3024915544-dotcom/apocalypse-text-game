@@ -9,6 +9,7 @@ import { loadHintsSeen, markHintSeen, type TutorialHintKey } from './game/tutori
 import { getSurvivalPoints, addSurvivalPoints, computeRunPoints, getCurrentRunId, setCurrentRunId, isRunSettled, markRunSettled } from './game/economy';
 import { getRunConfig, setRunConfig } from './game/runConfig';
 import { pickKeptItem, setStoredKeptItem } from './game/insurance';
+import { loadContextFeed, pushContextFeed, clearContextFeed, compressOutcome, type TurnSummary } from './game/contextFeed';
 import ShelterHome from './ShelterHome';
 
 type LogbookEntry = {
@@ -70,6 +71,9 @@ function RunScreen() {
   const [logbook, setLogbook] = useState<LogbookEntry[]>([]);
   const [isLogbookOpen, setIsLogbookOpen] = useState(false);
   const [logbookOpenSet, setLogbookOpenSet] = useState<Record<number, boolean>>({});
+  const [contextFeed, setContextFeed] = useState<TurnSummary[]>(() => loadContextFeed());
+  const [lastChoiceLabel, setLastChoiceLabel] = useState<string | null>(null);
+  const [narrativeMoreOpen, setNarrativeMoreOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasCreditedRef = useRef(false);
   const hasInitializedRef = useRef(false);
@@ -104,6 +108,11 @@ function RunScreen() {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
+  }, [lastResponse]);
+
+  /** 新回合叙事默认折叠“更多”。 */
+  useEffect(() => {
+    setNarrativeMoreOpen(false);
   }, [lastResponse]);
 
   /** 提示 A：背包满 — 出现背包满弹窗时且未看过则显示一次。 */
@@ -301,6 +310,15 @@ function RunScreen() {
         [turnIdx - 1]: true,
         [turnIdx - 2]: true,
       }));
+      buildAndPushContextSummary({
+        snapshotState,
+        action,
+        response,
+        bagCountBefore,
+        bagCountAfter,
+        statusBefore,
+        decisionLabel: lastChoiceLabel ?? actionLabel(action),
+      });
       const rawAdds = response.ui?.bag_delta?.add ?? [];
       const adds: BagItem[] = rawAdds.map((a): BagItem => ({
         id: a.id,
@@ -459,6 +477,15 @@ function RunScreen() {
         [turnIdx - 1]: true,
         [turnIdx - 2]: true,
       }));
+      buildAndPushContextSummary({
+        snapshotState,
+        action,
+        response,
+        bagCountBefore,
+        bagCountAfter,
+        statusBefore,
+        decisionLabel: actionLabel(action),
+      });
       const rawAdds = response.ui?.bag_delta?.add ?? [];
       const adds: BagItem[] = rawAdds.map((a): BagItem => ({
         id: a.id,
@@ -538,6 +565,8 @@ function RunScreen() {
       /* ignore */
     }
     setRunConfig({ insuranceUsed: false });
+    clearContextFeed();
+    setContextFeed([]);
     const newState = createInitialState();
     setCurrentRunId(newState.runId);
     setGameState(newState);
@@ -551,6 +580,43 @@ function RunScreen() {
     window.location.hash = '#/';
   };
 
+  /** 成功推进后写一条上下文流（仅前端推导，不请求）。 */
+  const buildAndPushContextSummary = (params: {
+    snapshotState: GameState;
+    action: ActionType;
+    response: TurnResponse;
+    bagCountBefore: number;
+    bagCountAfter: number;
+    statusBefore: GameState['status'];
+    decisionLabel: string;
+  }) => {
+    const { snapshotState, action, response, bagCountBefore, bagCountAfter, statusBefore, decisionLabel } = params;
+    const turnIdx = snapshotState.turn_index;
+    const nextState = action !== 'INIT' ? applyAction(snapshotState, action, {} as Parameters<typeof applyAction>[2]) : snapshotState;
+    const batBefore = snapshotState.battery ?? null;
+    const hpBefore = snapshotState.hp ?? null;
+    const batAfter = nextState.battery ?? null;
+    const hpAfter = nextState.hp ?? null;
+    const statusAfter = nextState.status;
+    const firstBlock = response.scene_blocks?.[0];
+    const outcomeText = compressOutcome(firstBlock?.content);
+    const summary: TurnSummary = {
+      id: `cf-${turnIdx}-${Date.now()}`,
+      turn: turnIdx,
+      decisionText: decisionLabel,
+      outcomeText,
+      deltas: {
+        batDelta: batBefore != null && batAfter != null ? batAfter - batBefore : null,
+        hpDelta: hpBefore != null && hpAfter != null ? hpAfter - hpBefore : null,
+        bagDelta: bagCountAfter - bagCountBefore,
+        pointsDelta: (statusAfter === 'WIN' || statusAfter === 'LOSS') ? computeRunPoints(nextState) : null,
+      },
+      statusBefore,
+      statusAfter,
+    };
+    setContextFeed(pushContextFeed(summary));
+  };
+
   const restartGame = () => {
     hasCreditedRef.current = false;
     setSettlementRunPoints(null);
@@ -560,6 +626,8 @@ function RunScreen() {
     setTurnError(null);
     setTurnErrorDismissed(false);
     setRunConfig({ insuranceUsed: false });
+    clearContextFeed();
+    setContextFeed([]);
     const newState = createInitialState();
     setCurrentRunId(newState.runId);
     setGameState(newState);
@@ -841,15 +909,67 @@ function RunScreen() {
             </div>
           )}
           <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 min-h-0 bg-black/20 md:bg-black/15">
-            <div className="max-w-[860px] mx-auto w-full px-3 md:px-6">
-              {lastResponse?.scene_blocks?.map((block, i) => (
-                <div key={i} className="animate-fade-in mb-3 md:mb-4 last:mb-0">
-                  {block.type === 'TITLE' && <h2 className="text-base md:text-lg font-bold text-white mb-1 uppercase tracking-widest">{block.content}</h2>}
-                  {block.type === 'EVENT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100 font-sans">{block.content}</p>}
-                  {block.type === 'RESULT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100/90 border-l-2 border-red-900/60 pl-3 italic font-sans">{block.content}</p>}
-                  {block.type === 'AFTERTASTE' && <p className="text-xs md:text-sm text-zinc-400 mt-1 italic font-serif">"{block.content}"</p>}
-                </div>
-              ))}
+            <div className="max-w-[860px] mx-auto w-full px-3 md:px-6 space-y-4">
+              {contextFeed.length > 0 && (
+                <section className="shrink-0" aria-label="本局记录">
+                  <h3 className="text-xs text-zinc-400 uppercase tracking-wide mb-2">本局记录</h3>
+                  <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1">
+                    {contextFeed.slice(-8).map((item) => (
+                      <div key={item.id} className="rounded border border-gray-700/60 bg-black/30 px-2.5 py-1.5 text-[11px] md:text-xs">
+                        <p className="font-medium text-orange-300/95">你选择：{item.decisionText}</p>
+                        <p className="text-zinc-300/90 mt-0.5 line-clamp-2">{item.outcomeText}</p>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {item.deltas.batDelta != null && item.deltas.batDelta !== 0 && (
+                            <span className="px-1.5 py-0.5 rounded bg-blue-950/50 text-blue-200/90 border border-blue-800/40">电量 {item.deltas.batDelta > 0 ? '+' : ''}{item.deltas.batDelta}</span>
+                          )}
+                          {item.deltas.hpDelta != null && item.deltas.hpDelta !== 0 && (
+                            <span className="px-1.5 py-0.5 rounded bg-red-950/50 text-red-200/90 border border-red-800/40">生命 {item.deltas.hpDelta > 0 ? '+' : ''}{item.deltas.hpDelta}</span>
+                          )}
+                          {item.deltas.bagDelta != null && item.deltas.bagDelta !== 0 && (
+                            <span className="px-1.5 py-0.5 rounded bg-amber-950/50 text-amber-200/90 border border-amber-800/40">背包 {item.deltas.bagDelta > 0 ? '+' : ''}{item.deltas.bagDelta}</span>
+                          )}
+                          {item.deltas.pointsDelta != null && item.deltas.pointsDelta !== 0 && (
+                            <span className="px-1.5 py-0.5 rounded bg-green-950/50 text-green-200/90 border border-green-800/40">生存点 +{item.deltas.pointsDelta}</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+              {lastResponse?.scene_blocks != null && lastResponse.scene_blocks.length > 0 && (
+                <>
+                  {lastResponse.scene_blocks.slice(0, 1).map((block, i) => (
+                    <div key={i} className="animate-fade-in mb-3 md:mb-4">
+                      {block.type === 'TITLE' && <h2 className="text-base md:text-lg font-bold text-white mb-1 uppercase tracking-widest">{block.content}</h2>}
+                      {block.type === 'EVENT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100 font-sans">{block.content}</p>}
+                      {block.type === 'RESULT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100/90 border-l-2 border-red-900/60 pl-3 italic font-sans">{block.content}</p>}
+                      {block.type === 'AFTERTASTE' && <p className="text-xs md:text-sm text-zinc-400 mt-1 italic font-serif">"{block.content}"</p>}
+                    </div>
+                  ))}
+                  {lastResponse.scene_blocks.length > 1 && (
+                    <>
+                      {narrativeMoreOpen ? (
+                        lastResponse.scene_blocks.slice(1).map((block, i) => (
+                          <div key={i} className="animate-fade-in mb-3 md:mb-4">
+                            {block.type === 'TITLE' && <h2 className="text-base md:text-lg font-bold text-white mb-1 uppercase tracking-widest">{block.content}</h2>}
+                            {block.type === 'EVENT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100 font-sans">{block.content}</p>}
+                            {block.type === 'RESULT' && <p className="text-sm md:text-[15px] leading-6 md:leading-7 text-zinc-100/90 border-l-2 border-red-900/60 pl-3 italic font-sans">{block.content}</p>}
+                            {block.type === 'AFTERTASTE' && <p className="text-xs md:text-sm text-zinc-400 mt-1 italic font-serif">"{block.content}"</p>}
+                          </div>
+                        ))
+                      ) : null}
+                      <button
+                        type="button"
+                        className="text-xs text-zinc-500 hover:text-zinc-300 border border-gray-700/60 hover:border-gray-600 px-2 py-1 rounded transition mb-3 md:mb-4"
+                        onClick={() => setNarrativeMoreOpen((v) => !v)}
+                      >
+                        {narrativeMoreOpen ? '收起' : '更多'}
+                      </button>
+                    </>
+                  )}
+                </>
+              )}
             {gameState.status !== 'PLAYING' && (
               <div className="p-6 bg-black/40 border border-gray-700 text-center space-y-4">
                 <h3 className={`text-2xl font-bold ${gameState.status === 'WIN' ? 'text-green-500' : 'text-red-600'}`}>
@@ -892,6 +1012,7 @@ function RunScreen() {
                     type="button"
                     disabled={turnInFlight}
                     onClick={() => {
+                      setLastChoiceLabel(choice.label);
                       setLastActionType(choice.action_type);
                       submitTurn(choice.action_type);
                     }}
