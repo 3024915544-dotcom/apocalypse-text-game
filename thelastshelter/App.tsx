@@ -4,6 +4,8 @@ import { createInitialState, applyAction, applyBagDelta, getEmptyBagSlots } from
 import { fetchTurnResponse, type TurnRequestMeta, type TurnError } from './geminiService';
 import { GRID_SIZE, MAX_TURNS, MILESTONES, BAG_CAPACITY, BATTERY_MAX } from './constants';
 import { logTurnTrace, detectFallback } from './game/turnTrace';
+import { loadFeatureFlags } from './game/featureFlags';
+import { loadHintsSeen, markHintSeen, type TutorialHintKey } from './game/tutorialHints';
 import { getSurvivalPoints, addSurvivalPoints, computeRunPoints, getCurrentRunId, setCurrentRunId, isRunSettled, markRunSettled } from './game/economy';
 import { getRunConfig, setRunConfig } from './game/runConfig';
 import { pickKeptItem, setStoredKeptItem } from './game/insurance';
@@ -73,6 +75,10 @@ function RunScreen() {
   const hasInitializedRef = useRef(false);
   const devPickupCounterRef = useRef(0);
   const [settlementButtonsDisabled, setSettlementButtonsDisabled] = useState(false);
+  const [featureFlags] = useState(() => loadFeatureFlags());
+  const [activeHint, setActiveHint] = useState<{ key: TutorialHintKey; text: string } | null>(null);
+  const batteryHintShownRef = useRef(loadHintsSeen().BAT_LOW === true);
+  const extractHintShownRef = useRef(loadHintsSeen().EXTRACT_CHOICES === true);
 
   useEffect(() => {
     setCurrentRunId(gameState.runId);
@@ -97,6 +103,44 @@ function RunScreen() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [lastResponse]);
+
+  /** 提示 A：背包满 — 出现背包满弹窗时且未看过则显示一次。 */
+  useEffect(() => {
+    if (!isBagModalOpen || !pendingAddItem || !featureFlags.tutorialHintsEnabled) return;
+    if (loadHintsSeen().BAG_FULL === true) return;
+    setActiveHint({ key: 'BAG_FULL', text: '背包满了：你需要替换或丢弃一件物品。' });
+  }, [isBagModalOpen, pendingAddItem, featureFlags.tutorialHintsEnabled]);
+
+  /** 提示 B：电量见底 — 电量首次降到阈值以下时显示一次。 */
+  useEffect(() => {
+    if (!featureFlags.tutorialHintsEnabled) return;
+    if (batteryHintShownRef.current || loadHintsSeen().BAT_LOW === true) return;
+    const bat = gameState.battery ?? BATTERY_MAX;
+    if (bat > 2) return;
+    batteryHintShownRef.current = true;
+    setActiveHint({ key: 'BAT_LOW', text: '电量见底：再耗尽会进入「黑暗模式」，尽量考虑撤离。' });
+  }, [gameState.battery, featureFlags.tutorialHintsEnabled]);
+
+  /** 提示 C：双撤离点首次出现 — choices 中首次出现撤离-近/撤离-远时显示一次。 */
+  useEffect(() => {
+    if (!featureFlags.tutorialHintsEnabled) return;
+    if (extractHintShownRef.current || loadHintsSeen().EXTRACT_CHOICES === true) return;
+    const choices = lastResponse?.choices ?? [];
+    const hasExtract = choices.some((c) => (c.label && (c.label.includes('撤离-近') || c.label.includes('撤离-远'))));
+    if (!hasExtract) return;
+    extractHintShownRef.current = true;
+    setActiveHint({ key: 'EXTRACT_CHOICES', text: '撤离有两种：近撤离要等一回合更危险；远撤离更耗电但更稳。' });
+  }, [lastResponse?.choices, featureFlags.tutorialHintsEnabled]);
+
+  /** 提示条自动消失（8 秒）。 */
+  useEffect(() => {
+    if (!activeHint) return;
+    const t = setTimeout(() => {
+      markHintSeen(activeHint.key);
+      setActiveHint(null);
+    }, 8000);
+    return () => clearTimeout(t);
+  }, [activeHint]);
 
   // 结算入账：仅在本局首次变为非 PLAYING 时执行一次；死亡且保险时保留 1 格并计分；幂等防重复入账
   useEffect(() => {
@@ -217,22 +261,24 @@ function RunScreen() {
       const addCount = response.ui?.bag_delta?.add?.length ?? 0;
       const removeCount = response.ui?.bag_delta?.remove?.length ?? 0;
       const bagCountAfter = snapshotState.bag.length + addCount - removeCount;
-      logTurnTrace({
-        ts: Date.now(),
-        runId,
-        clientTurnIndex,
-        action: String(action),
-        ok: true,
-        isFallback: detectFallback(response),
-        batBefore,
-        batAfter: snapshotState.battery ?? null,
-        hpBefore,
-        hpAfter: snapshotState.hp ?? null,
-        bagCountBefore,
-        bagCountAfter,
-        statusBefore,
-        statusAfter: snapshotState.status,
-      });
+      if (loadFeatureFlags().turnTraceEnabled) {
+        logTurnTrace({
+          ts: Date.now(),
+          runId,
+          clientTurnIndex,
+          action: String(action),
+          ok: true,
+          isFallback: detectFallback(response),
+          batBefore,
+          batAfter: snapshotState.battery ?? null,
+          hpBefore,
+          hpAfter: snapshotState.hp ?? null,
+          bagCountBefore,
+          bagCountAfter,
+          statusBefore,
+          statusAfter: snapshotState.status,
+        });
+      }
       const turnIdx = snapshotState.turn_index;
       const logEntry: LogbookEntry = {
         id: `${turnIdx}-${Date.now()}`,
@@ -288,23 +334,25 @@ function RunScreen() {
           : { type: 'UNKNOWN', message: '请求失败，请重试或返回避难所', debug: err instanceof Error ? err.message : String(err) };
       setTurnError(te);
       setLastFailedTurn({ snapshotState, action, meta, createdAt: Date.now() });
-      logTurnTrace({
-        ts: Date.now(),
-        runId,
-        clientTurnIndex,
-        action: String(action),
-        ok: false,
-        errType: te.type,
-        httpStatus: te.status,
-        batBefore,
-        batAfter: null,
-        hpBefore,
-        hpAfter: null,
-        bagCountBefore,
-        bagCountAfter: bagCountBefore,
-        statusBefore,
-        statusAfter: statusBefore,
-      });
+      if (loadFeatureFlags().turnTraceEnabled) {
+        logTurnTrace({
+          ts: Date.now(),
+          runId,
+          clientTurnIndex,
+          action: String(action),
+          ok: false,
+          errType: te.type,
+          httpStatus: te.status,
+          batBefore,
+          batAfter: null,
+          hpBefore,
+          hpAfter: null,
+          bagCountBefore,
+          bagCountAfter: bagCountBefore,
+          statusBefore,
+          statusAfter: statusBefore,
+        });
+      }
       if (action === 'INIT') {
         try {
           sessionStorage.setItem('m_apoc_init_failed_v1', '1');
@@ -336,22 +384,24 @@ function RunScreen() {
         const expectedNext = clientTurnIndex + 1;
         if (respTurnIndex !== expectedNext) {
           setTurnError({ type: 'UNKNOWN', message: '回合同步异常，已取消本次推进，请重试' });
-          logTurnTrace({
-            ts: Date.now(),
-            runId,
-            clientTurnIndex,
-            action: String(action),
-            ok: false,
-            errType: 'UNKNOWN',
-            batBefore,
-            batAfter: null,
-            hpBefore,
-            hpAfter: null,
-            bagCountBefore,
-            bagCountAfter: bagCountBefore,
-            statusBefore,
-            statusAfter: statusBefore,
-          });
+          if (loadFeatureFlags().turnTraceEnabled) {
+            logTurnTrace({
+              ts: Date.now(),
+              runId,
+              clientTurnIndex,
+              action: String(action),
+              ok: false,
+              errType: 'UNKNOWN',
+              batBefore,
+              batAfter: null,
+              hpBefore,
+              hpAfter: null,
+              bagCountBefore,
+              bagCountAfter: bagCountBefore,
+              statusBefore,
+              statusAfter: statusBefore,
+            });
+          }
           return;
         }
       }
@@ -368,22 +418,24 @@ function RunScreen() {
       const addCount = response.ui?.bag_delta?.add?.length ?? 0;
       const removeCount = response.ui?.bag_delta?.remove?.length ?? 0;
       const bagCountAfter = snapshotState.bag.length + addCount - removeCount;
-      logTurnTrace({
-        ts: Date.now(),
-        runId,
-        clientTurnIndex,
-        action: String(action),
-        ok: true,
-        isFallback: detectFallback(response),
-        batBefore,
-        batAfter: snapshotState.battery ?? null,
-        hpBefore,
-        hpAfter: snapshotState.hp ?? null,
-        bagCountBefore,
-        bagCountAfter,
-        statusBefore,
-        statusAfter: snapshotState.status,
-      });
+      if (loadFeatureFlags().turnTraceEnabled) {
+        logTurnTrace({
+          ts: Date.now(),
+          runId,
+          clientTurnIndex,
+          action: String(action),
+          ok: true,
+          isFallback: detectFallback(response),
+          batBefore,
+          batAfter: snapshotState.battery ?? null,
+          hpBefore,
+          hpAfter: snapshotState.hp ?? null,
+          bagCountBefore,
+          bagCountAfter,
+          statusBefore,
+          statusAfter: snapshotState.status,
+        });
+      }
       const turnIdx = snapshotState.turn_index;
       const logEntry: LogbookEntry = {
         id: `${turnIdx}-${Date.now()}`,
@@ -438,23 +490,25 @@ function RunScreen() {
           ? (err as TurnError)
           : { type: 'UNKNOWN', message: '请求失败，请重试或返回避难所', debug: err instanceof Error ? err.message : String(err) };
       setTurnError(te);
-      logTurnTrace({
-        ts: Date.now(),
-        runId,
-        clientTurnIndex,
-        action: String(action),
-        ok: false,
-        errType: te.type,
-        httpStatus: te.status,
-        batBefore,
-        batAfter: null,
-        hpBefore,
-        hpAfter: null,
-        bagCountBefore,
-        bagCountAfter: bagCountBefore,
-        statusBefore,
-        statusAfter: statusBefore,
-      });
+      if (loadFeatureFlags().turnTraceEnabled) {
+        logTurnTrace({
+          ts: Date.now(),
+          runId,
+          clientTurnIndex,
+          action: String(action),
+          ok: false,
+          errType: te.type,
+          httpStatus: te.status,
+          batBefore,
+          batAfter: null,
+          hpBefore,
+          hpAfter: null,
+          bagCountBefore,
+          bagCountAfter: bagCountBefore,
+          statusBefore,
+          statusAfter: statusBefore,
+        });
+      }
       if (action === 'INIT') {
         try {
           sessionStorage.setItem('m_apoc_init_failed_v1', '1');
@@ -692,7 +746,7 @@ function RunScreen() {
           <div className="p-3 border-b border-gray-800 flex justify-between items-center gap-2 text-[10px] bg-[#0d0d0d]">
              <span className="text-orange-500">TERMINAL.LOG</span>
              <div className="flex items-center gap-2">
-               {lastResponse && detectFallback(lastResponse) && (
+               {featureFlags.fallbackBadgeEnabled && lastResponse && detectFallback(lastResponse) && (
                  <span className="text-amber-500/90 italic" title="记录简化">通讯不稳</span>
                )}
                {turnInFlight && <span className="animate-pulse text-blue-400 italic">处理中…</span>}
@@ -705,6 +759,19 @@ function RunScreen() {
                </button>
              </div>
           </div>
+          {featureFlags.tutorialHintsEnabled && activeHint && (
+            <div className="px-3 py-2 bg-amber-950/50 border-b border-amber-900/50 flex items-center justify-between gap-2 text-[10px] text-amber-200 shrink-0">
+              <span className="flex-1 min-w-0">{activeHint.text}</span>
+              <button
+                type="button"
+                className="shrink-0 w-5 h-5 flex items-center justify-center text-amber-400 hover:text-amber-200 hover:bg-amber-900/40 rounded"
+                onClick={() => { markHintSeen(activeHint.key); setActiveHint(null); }}
+                aria-label="关闭"
+              >
+                ×
+              </button>
+            </div>
+          )}
           <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-6">
             {lastResponse?.scene_blocks?.map((block, i) => (
               <div key={i} className="animate-fade-in">

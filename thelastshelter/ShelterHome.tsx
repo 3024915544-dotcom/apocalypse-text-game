@@ -1,8 +1,15 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { getRunConfig, setRunConfig, defaultRunConfig, type RunConfigVariantId } from "./game/runConfig";
 import { getSurvivalPoints, spendSurvivalPoints } from "./game/economy";
 import { INSURANCE_COST, APP_VERSION, TURN_ENDPOINT } from "./constants";
 import { createInitialState } from "./engine";
+import {
+  loadFeatureFlags,
+  saveFeatureFlags,
+  isDebugMode,
+  setDebugMode,
+  type FeatureFlags,
+} from "./game/featureFlags";
 
 const VARIANT_LABELS: Record<RunConfigVariantId, string> = {
   night: "夜行",
@@ -21,6 +28,9 @@ const ShelterHome: React.FC = () => {
   const [survivalPoints, setSurvivalPoints] = useState(0);
   const [connectionCheck, setConnectionCheck] = useState<"idle" | "checking" | "ok" | "fail">("idle");
   const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
+  const [flags, setFlags] = useState<FeatureFlags>(() => loadFeatureFlags());
+  const [debugOn, setDebugOn] = useState(false);
+  const versionClicksRef = useRef(0);
 
   useEffect(() => {
     const cfg = getRunConfig();
@@ -41,6 +51,21 @@ const ShelterHome: React.FC = () => {
     }
     setSurvivalPoints(getSurvivalPoints());
     window.location.hash = "#/run";
+  };
+
+  const handleVersionClick = () => {
+    versionClicksRef.current += 1;
+    if (versionClicksRef.current >= 5) {
+      setDebugMode(true);
+      setDebugOn(true);
+      versionClicksRef.current = 0;
+    }
+  };
+
+  const handleFlagChange = (key: keyof FeatureFlags, value: boolean) => {
+    const next = { ...flags, [key]: value };
+    setFlags(next);
+    saveFeatureFlags(next);
   };
 
   const checkConnection = async () => {
@@ -96,21 +121,25 @@ const ShelterHome: React.FC = () => {
             局前物资
           </h2>
           <p className="text-sm text-gray-300 mb-3">当前生存点：<span className="font-bold text-orange-400">{survivalPoints}</span></p>
-          <label className="flex items-center gap-2 cursor-pointer group">
-            <input
-              type="checkbox"
-              checked={insuranceChecked}
-              onChange={(e) => setInsuranceChecked(e.target.checked)}
-              disabled={survivalPoints < INSURANCE_COST}
-              className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-orange-500 disabled:opacity-50 disabled:cursor-not-allowed"
-            />
-            <span className={survivalPoints < INSURANCE_COST ? "text-gray-500" : "text-gray-300 group-hover:text-white"}>
-              购买保险袋（本局）
-            </span>
-            <span className="text-xs text-gray-500">— {INSURANCE_COST} 生存点</span>
-          </label>
-          {survivalPoints < INSURANCE_COST && insuranceChecked === false && (
-            <p className="text-xs text-amber-600/90 mt-1">生存点不足时无法勾选</p>
+          {flags.insurancePayEnabled && (
+            <>
+              <label className="flex items-center gap-2 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={insuranceChecked}
+                  onChange={(e) => setInsuranceChecked(e.target.checked)}
+                  disabled={survivalPoints < INSURANCE_COST}
+                  className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-orange-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+                <span className={survivalPoints < INSURANCE_COST ? "text-gray-500" : "text-gray-300 group-hover:text-white"}>
+                  购买保险袋（本局）
+                </span>
+                <span className="text-xs text-gray-500">— {INSURANCE_COST} 生存点</span>
+              </label>
+              {survivalPoints < INSURANCE_COST && insuranceChecked === false && (
+                <p className="text-xs text-amber-600/90 mt-1">生存点不足时无法勾选</p>
+              )}
+            </>
           )}
         </div>
 
@@ -148,28 +177,56 @@ const ShelterHome: React.FC = () => {
           开始探索
         </button>
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            className="px-3 py-1.5 text-[10px] border border-gray-600 text-gray-400 hover:bg-gray-800 transition"
-            onClick={checkConnection}
-            disabled={connectionCheck === "checking"}
-          >
-            {connectionCheck === "checking" ? "检查中…" : "检查连接"}
-          </button>
-          {connectionCheck === "ok" && connectionMessage && (
-            <span className="text-[10px] text-green-500">{connectionMessage}</span>
-          )}
-          {connectionCheck === "fail" && connectionMessage && (
-            <span className="text-[10px] text-red-400">{connectionMessage}</span>
-          )}
-        </div>
+        {flags.shelterHealthCheckEnabled && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              className="px-3 py-1.5 text-[10px] border border-gray-600 text-gray-400 hover:bg-gray-800 transition"
+              onClick={checkConnection}
+              disabled={connectionCheck === "checking"}
+            >
+              {connectionCheck === "checking" ? "检查中…" : "检查连接"}
+            </button>
+            {connectionCheck === "ok" && connectionMessage && (
+              <span className="text-[10px] text-green-500">{connectionMessage}</span>
+            )}
+            {connectionCheck === "fail" && connectionMessage && (
+              <span className="text-[10px] text-red-400">{connectionMessage}</span>
+            )}
+          </div>
+        )}
       </div>
-      <div className="absolute bottom-3 right-3 z-10">
+      <div className="absolute bottom-3 right-3 z-10 flex flex-col items-end gap-2">
+        {(isDebugMode() || debugOn) && (
+          <div className="border border-gray-700 bg-[#111] p-3 rounded shadow-xl text-left min-w-[200px]">
+            <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-800 pb-1.5 mb-2">
+              功能开关（Debug）
+            </div>
+            {[
+              { key: "contractsEnabled" as const, label: "合同挑战（Contracts）" },
+              { key: "insurancePayEnabled" as const, label: "保险袋付费入口" },
+              { key: "turnTraceEnabled" as const, label: "回合追踪（TurnTrace）" },
+              { key: "fallbackBadgeEnabled" as const, label: "兜底提示（Fallback Badge）" },
+              { key: "shelterHealthCheckEnabled" as const, label: "检查连接按钮" },
+              { key: "tutorialHintsEnabled" as const, label: "新手提示" },
+            ].map(({ key, label }) => (
+              <label key={key} className="flex items-center gap-2 cursor-pointer group py-0.5">
+                <input
+                  type="checkbox"
+                  checked={flags[key]}
+                  onChange={(e) => handleFlagChange(key, e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-gray-600 bg-gray-800 text-orange-500"
+                />
+                <span className="text-[10px] text-gray-400 group-hover:text-gray-300">{label}</span>
+              </label>
+            ))}
+          </div>
+        )}
         <button
           type="button"
           className="text-[10px] text-gray-500 hover:text-gray-400 font-mono select-all cursor-pointer"
           onClick={() => {
+            handleVersionClick();
             try {
               navigator.clipboard.writeText(APP_VERSION);
             } catch {
