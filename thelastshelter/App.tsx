@@ -11,6 +11,7 @@ import { getRunConfig, setRunConfig } from './game/runConfig';
 import { pickKeptItem, setStoredKeptItem } from './game/insurance';
 import { loadContextFeed, pushContextFeed, clearContextFeed, compressOutcome, truncateSceneBlocks, formatDeltas, type TurnSummary } from './game/contextFeed';
 import { getTensionLabel, getTensionHintForTurn } from './game/tension';
+import { getFocusHint } from './game/focusHint';
 import ShelterHome from './ShelterHome';
 
 type LogbookEntry = {
@@ -927,6 +928,9 @@ function RunScreen() {
                 完整日志
               </button>
             </div>
+          </div>
+          <div className="shrink-0 px-3 md:px-4 py-1.5 pointer-events-none border-b border-white/5" aria-live="polite">
+            <p className="max-w-[860px] mx-auto text-[11px] text-zinc-500/90">{getFocusHint(gameState, lastResponse)}</p>
           </div>
           {featureFlags.tutorialHintsEnabled && activeHint && (
             <div className="px-3 py-2 bg-amber-950/50 border-b border-amber-900/50 flex items-center justify-between gap-2 text-[10px] text-amber-200 shrink-0">
